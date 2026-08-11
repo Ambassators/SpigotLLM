@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import dev.foreground.spigotllm.console.AgentConsoleBridge;
 import dev.foreground.spigotllm.model.Identity;
 import dev.foreground.spigotllm.model.Provider;
 import dev.foreground.spigotllm.model.ReasoningEffort;
@@ -22,16 +23,18 @@ import java.util.Map;
 public final class CodexAdapter implements ProviderAdapter {
     private final RuntimeResolver runtimes;
     private final SessionStore sessions;
+    private final AgentConsoleBridge consoleBridge;
     private final Path agentWorkingDirectory;
     private final int chatTimeout;
     private final int agentTimeout;
     private final ProcessSupport processes = new ProcessSupport();
     private final ActiveProcesses active = new ActiveProcesses();
 
-    public CodexAdapter(RuntimeResolver runtimes, SessionStore sessions, Path agentWorkingDirectory,
-                        int chatTimeout, int agentTimeout) {
+    public CodexAdapter(RuntimeResolver runtimes, SessionStore sessions, AgentConsoleBridge consoleBridge,
+                        Path agentWorkingDirectory, int chatTimeout, int agentTimeout) {
         this.runtimes = runtimes;
         this.sessions = sessions;
+        this.consoleBridge = consoleBridge;
         this.agentWorkingDirectory = agentWorkingDirectory;
         this.chatTimeout = chatTimeout;
         this.agentTimeout = agentTimeout;
@@ -40,6 +43,7 @@ public final class CodexAdapter implements ProviderAdapter {
     @Override
     public PromptResult prompt(final Identity identity, SessionRecord session, String prompt,
                                final ProgressListener progress) throws ProviderException {
+        AgentConsoleBridge.Lease consoleLease = null;
         try {
             Path executable = runtimes.resolve(Provider.CODEX);
             Path identityRoot = sessions.identityRoot(identity);
@@ -66,6 +70,9 @@ public final class CodexAdapter implements ProviderAdapter {
                 command.add("model_reasoning_effort=\"" + effort.id() + "\"");
             }
             if (session.getMode() == SessionMode.AGENT) {
+                consoleLease = consoleBridge.open(identity, session);
+                command.add("-c");
+                command.add("developer_instructions=" + tomlString(consoleLease.instructions()));
                 command.add("--dangerously-bypass-approvals-and-sandbox");
             } else {
                 command.add("-c");
@@ -111,6 +118,8 @@ public final class CodexAdapter implements ProviderAdapter {
                     output.threadId == null ? session.getProviderSessionId() : output.threadId);
         } catch (IOException e) {
             throw new ProviderException("Could not start Codex: " + e.getMessage(), e);
+        } finally {
+            if (consoleLease != null) consoleLease.close();
         }
     }
 
@@ -208,6 +217,14 @@ public final class CodexAdapter implements ProviderAdapter {
 
     private String redact(String line) {
         return line.replaceAll("(?i)(sk-[A-Za-z0-9_-]{12})[A-Za-z0-9_-]+", "$1...");
+    }
+
+    private String tomlString(String value) {
+        return "\"" + value.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t") + "\"";
     }
 
     private static final class CodexOutput {

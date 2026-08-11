@@ -8,7 +8,7 @@ for Spigot-compatible servers from Minecraft 1.8.8 onward.
 ## Install
 
 Build with `mvn clean package`, then copy
-`target/SpigotLLM-1.1.0-SNAPSHOT.jar` into the server's `plugins` directory.
+`target/SpigotLLM-1.2.0-SNAPSHOT.jar` into the server's `plugins` directory.
 After the first start, use the real server console:
 
 ```text
@@ -136,9 +136,35 @@ behavior.
 `agent` mode deliberately launches the provider with approval prompts and
 sandboxing bypassed. It can read, change, or delete anything accessible to the
 Minecraft server operating-system account and can execute commands with that
-account's privileges. Only authorize operators who should already have that
-level of server access. `chat` mode disables Claude tools and gives Codex a
-read-only sandbox rooted in a plugin-managed empty workspace.
+account's privileges. It also receives a Minecraft console bridge with the
+authority of the real server console. Only authorize operators who should
+already have both levels of server access. `chat` mode disables Claude tools,
+does not receive the console bridge, and gives Codex a read-only sandbox rooted
+in a plugin-managed empty workspace.
+
+## Agent console bridge
+
+Codex and Claude automatically receive console access during an authorized
+`agent` prompt. For example:
+
+```text
+codex agent Read the last 100 console lines and explain the newest error.
+codex agent Run the list command, then tell me how many players are online.
+claude agent Check the console for startup errors and run plugins if needed.
+```
+
+The agent reads the live log configured by `agent-console.log-file` (the
+default is `logs/latest.log`). To send a command, it uses a private request and
+response directory under `plugins/SpigotLLM/agent-console`. The plugin polls
+only bridges belonging to currently active agent prompts and dispatches each
+request synchronously through Bukkit's real `ConsoleCommandSender`. Requests
+cannot be submitted through `chat` mode or after the agent prompt finishes.
+
+Every dispatched command is written to the server log with the invoking
+identity, provider, and named thread. The bridge intentionally does not add a
+separate in-game console command: access is exercised by the provider agent and
+still requires the invoking player to be both an OP and present in the
+console-managed SpigotLLM allowlist.
 
 ## Tests
 

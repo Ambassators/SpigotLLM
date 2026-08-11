@@ -3,6 +3,7 @@ package dev.foreground.spigotllm;
 import dev.foreground.spigotllm.access.AccessStore;
 import dev.foreground.spigotllm.account.LinkCodeCapture;
 import dev.foreground.spigotllm.account.SecretStore;
+import dev.foreground.spigotllm.console.AgentConsoleBridge;
 import dev.foreground.spigotllm.model.Provider;
 import dev.foreground.spigotllm.output.PrivateMessenger;
 import dev.foreground.spigotllm.provider.ClaudeAdapter;
@@ -23,6 +24,7 @@ import java.util.Map;
 
 public final class SpigotLlmPlugin extends JavaPlugin {
     private PromptCoordinator coordinator;
+    private AgentConsoleBridge consoleBridge;
 
     @Override
     public void onEnable() {
@@ -47,11 +49,18 @@ public final class SpigotLlmPlugin extends JavaPlugin {
                     getConfig().getString("execution.agent-working-directory", "."));
             int chatTimeout = getConfig().getInt("execution.chat-timeout-seconds", 300);
             int agentTimeout = getConfig().getInt("execution.agent-timeout-seconds", 1800);
+            consoleBridge = new AgentConsoleBridge(
+                    this,
+                    data.resolve("agent-console"),
+                    resolveFilePath(getConfig().getString("agent-console.log-file", "logs/latest.log")),
+                    getConfig().getInt("agent-console.poll-ticks", 1),
+                    getConfig().getInt("agent-console.max-command-length", 2048));
             Map<Provider, ProviderAdapter> adapters = new EnumMap<Provider, ProviderAdapter>(Provider.class);
             adapters.put(Provider.CODEX, new CodexAdapter(
-                    resolver, sessions, agentWorkingDirectory, chatTimeout, agentTimeout));
+                    resolver, sessions, consoleBridge, agentWorkingDirectory, chatTimeout, agentTimeout));
             adapters.put(Provider.CLAUDE, new ClaudeAdapter(
-                    resolver, sessions, secrets, agentWorkingDirectory, chatTimeout, agentTimeout));
+                    resolver, sessions, secrets, consoleBridge,
+                    agentWorkingDirectory, chatTimeout, agentTimeout));
 
             PrivateMessenger messenger = new PrivateMessenger(
                     this,
@@ -73,6 +82,7 @@ public final class SpigotLlmPlugin extends JavaPlugin {
             register("claude", commands);
 
             getLogger().info("Enabled. No player is trusted by default; authorize OP UUIDs from console with /sllm access add.");
+            getLogger().warning("Agent mode has access to the live server log and can dispatch commands as the real console.");
         } catch (Exception e) {
             getLogger().severe("SpigotLLM could not initialize: " + e.getMessage());
             getServer().getPluginManager().disablePlugin(this);
@@ -82,6 +92,7 @@ public final class SpigotLlmPlugin extends JavaPlugin {
     @Override
     public void onDisable() {
         if (coordinator != null) coordinator.shutdown();
+        if (consoleBridge != null) consoleBridge.shutdown();
     }
 
     private void register(String name, SpigotLlmCommand commands) {
@@ -97,5 +108,11 @@ public final class SpigotLlmPlugin extends JavaPlugin {
         Files.createDirectories(path);
         if (!Files.isDirectory(path)) throw new IOException("Agent working directory is not a directory: " + path);
         return path;
+    }
+
+    private Path resolveFilePath(String configured) {
+        File file = new File(configured == null || configured.trim().isEmpty()
+                ? "logs/latest.log" : configured.trim());
+        return file.toPath().toAbsolutePath().normalize();
     }
 }

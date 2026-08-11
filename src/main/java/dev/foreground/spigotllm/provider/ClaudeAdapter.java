@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.foreground.spigotllm.account.SecretStore;
+import dev.foreground.spigotllm.console.AgentConsoleBridge;
 import dev.foreground.spigotllm.model.Identity;
 import dev.foreground.spigotllm.model.Provider;
 import dev.foreground.spigotllm.model.ReasoningEffort;
@@ -37,6 +38,7 @@ public final class ClaudeAdapter implements ProviderAdapter {
     private final RuntimeResolver runtimes;
     private final SessionStore sessions;
     private final SecretStore secrets;
+    private final AgentConsoleBridge consoleBridge;
     private final Path agentWorkingDirectory;
     private final int chatTimeout;
     private final int agentTimeout;
@@ -50,10 +52,12 @@ public final class ClaudeAdapter implements ProviderAdapter {
     });
 
     public ClaudeAdapter(RuntimeResolver runtimes, SessionStore sessions, SecretStore secrets,
-                         Path agentWorkingDirectory, int chatTimeout, int agentTimeout) {
+                         AgentConsoleBridge consoleBridge, Path agentWorkingDirectory,
+                         int chatTimeout, int agentTimeout) {
         this.runtimes = runtimes;
         this.sessions = sessions;
         this.secrets = secrets;
+        this.consoleBridge = consoleBridge;
         this.agentWorkingDirectory = agentWorkingDirectory;
         this.chatTimeout = chatTimeout;
         this.agentTimeout = agentTimeout;
@@ -62,6 +66,7 @@ public final class ClaudeAdapter implements ProviderAdapter {
     @Override
     public PromptResult prompt(final Identity identity, SessionRecord session, String prompt,
                                final ProgressListener progress) throws ProviderException {
+        AgentConsoleBridge.Lease consoleLease = null;
         try {
             String token = secrets.get(identity, Provider.CLAUDE);
             if (token == null) throw new ProviderException("Claude account is not connected. Run /sllm account connect claude");
@@ -100,6 +105,9 @@ public final class ClaudeAdapter implements ProviderAdapter {
                 command.add(sessionId);
             }
             if (session.getMode() == SessionMode.AGENT) {
+                consoleLease = consoleBridge.open(identity, session);
+                command.add("--append-system-prompt");
+                command.add(consoleLease.instructions());
                 command.add("--dangerously-skip-permissions");
             } else {
                 command.add("--safe-mode");
@@ -135,6 +143,8 @@ public final class ClaudeAdapter implements ProviderAdapter {
             return new PromptResult(response, output.sessionId == null ? sessionId : output.sessionId);
         } catch (IOException e) {
             throw new ProviderException("Could not start Claude: " + e.getMessage(), e);
+        } finally {
+            if (consoleLease != null) consoleLease.close();
         }
     }
 

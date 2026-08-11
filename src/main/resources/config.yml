@@ -7,6 +7,13 @@ execution:
   agent-timeout-seconds: 1800
   max-concurrent-prompts: 2
 
+# Agent mode only. Commands requested through this bridge execute as the real
+# Minecraft server console and therefore have full server authority.
+agent-console:
+  log-file: "logs/latest.log"
+  poll-ticks: 1
+  max-command-length: 2048
+
 runtimes:
   retain-releases: 2
   connect-timeout-seconds: 20

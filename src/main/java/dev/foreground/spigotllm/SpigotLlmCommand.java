@@ -682,7 +682,7 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
         messenger.info(sender, "/sllm effort <provider> <chat|agent> [default|level]");
         messenger.info(sender, "/sllm runtime <install|update|rollback|status> <provider|all>");
         messenger.info(sender, "/sllm cancel [provider|all] and /sllm more [page]");
-        messenger.info(sender, "WARNING: agent mode grants the provider unrestricted access as the server process.");
+        messenger.info(sender, "WARNING: agent mode grants OS access and can dispatch real server-console commands.");
         if (sender instanceof ConsoleCommandSender) {
             messenger.info(sender, "/sllm access <add|remove|list> <player|uuid> (console only)");
         }
