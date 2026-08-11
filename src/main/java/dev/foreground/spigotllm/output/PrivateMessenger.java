@@ -1,0 +1,122 @@
+package dev.foreground.spigotllm.output;
+
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
+import org.bukkit.plugin.java.JavaPlugin;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+/** Sends output only to the command invoker and keeps paged answers per invoker. */
+public final class PrivateMessenger {
+    private static final String PREFIX = ChatColor.DARK_AQUA + "[SpigotLLM] " + ChatColor.RESET;
+
+    private final JavaPlugin plugin;
+    private final int linesPerPage;
+    private final int maxLineLength;
+    private final Map<String, List<List<String>>> pages = new ConcurrentHashMap<String, List<List<String>>>();
+
+    public PrivateMessenger(JavaPlugin plugin, int linesPerPage, int maxLineLength) {
+        this.plugin = plugin;
+        this.linesPerPage = Math.max(1, linesPerPage);
+        this.maxLineLength = Math.max(40, maxLineLength);
+    }
+
+    public void info(CommandSender sender, String message) {
+        send(sender, PREFIX + ChatColor.GRAY + sanitize(message));
+    }
+
+    public void success(CommandSender sender, String message) {
+        send(sender, PREFIX + ChatColor.GREEN + sanitize(message));
+    }
+
+    public void error(CommandSender sender, String message) {
+        send(sender, PREFIX + ChatColor.RED + sanitize(message));
+    }
+
+    public void response(CommandSender sender, String provider, String session, String response) {
+        List<String> lines = wrap(response == null ? "" : response);
+        if (lines.isEmpty()) lines = Collections.singletonList("(empty response)");
+        List<List<String>> resultPages = new ArrayList<List<String>>();
+        for (int index = 0; index < lines.size(); index += linesPerPage) {
+            resultPages.add(new ArrayList<String>(lines.subList(index, Math.min(lines.size(), index + linesPerPage))));
+        }
+        pages.put(key(sender), resultPages);
+        sendPage(sender, provider + " / " + session, resultPages, 1);
+    }
+
+    public boolean more(CommandSender sender, int page) {
+        List<List<String>> resultPages = pages.get(key(sender));
+        if (resultPages == null || resultPages.isEmpty()) {
+            error(sender, "No paged response is available.");
+            return false;
+        }
+        if (page < 1 || page > resultPages.size()) {
+            error(sender, "Page must be between 1 and " + resultPages.size() + ".");
+            return false;
+        }
+        sendPage(sender, "response", resultPages, page);
+        return true;
+    }
+
+    private void sendPage(CommandSender sender, String title, List<List<String>> resultPages, int page) {
+        List<String> pageLines = resultPages.get(page - 1);
+        send(sender, ChatColor.DARK_AQUA + "--- " + sanitize(title) + " [" + page + "/" + resultPages.size() + "] ---");
+        for (String line : pageLines) send(sender, ChatColor.AQUA + line);
+        if (page < resultPages.size()) {
+            send(sender, ChatColor.GRAY + "Use /sllm more " + (page + 1) + " for the next page.");
+        }
+    }
+
+    private List<String> wrap(String raw) {
+        String clean = sanitize(raw).replace("\r\n", "\n").replace('\r', '\n');
+        List<String> output = new ArrayList<String>();
+        String[] sourceLines = clean.split("\n", -1);
+        for (String source : sourceLines) {
+            if (source.isEmpty()) {
+                output.add(" ");
+                continue;
+            }
+            String remaining = source;
+            while (remaining.length() > maxLineLength) {
+                int split = remaining.lastIndexOf(' ', maxLineLength);
+                if (split < maxLineLength / 2) split = maxLineLength;
+                output.add(remaining.substring(0, split).trim());
+                remaining = remaining.substring(split).trim();
+            }
+            if (!remaining.isEmpty()) output.add(remaining);
+        }
+        return output;
+    }
+
+    private String sanitize(String value) {
+        if (value == null) return "";
+        return value.replace('\u00a7', '?')
+                .replaceAll("[\\p{Cntrl}&&[^\\r\\n\\t]]", "")
+                .trim();
+    }
+
+    private String key(CommandSender sender) {
+        return sender instanceof Player
+                ? "player:" + ((Player) sender).getUniqueId().toString()
+                : "console";
+    }
+
+    private void send(final CommandSender sender, final String message) {
+        Runnable delivery = new Runnable() {
+            @Override public void run() { sender.sendMessage(message); }
+        };
+        if (Bukkit.isPrimaryThread()) {
+            delivery.run();
+        } else if (plugin.isEnabled()) {
+            Bukkit.getScheduler().runTask(plugin, delivery);
+        } else {
+            plugin.getLogger().info(ChatColor.stripColor(message));
+        }
+    }
+}

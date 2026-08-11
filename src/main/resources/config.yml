@@ -1,0 +1,21 @@
+# Only the server console can edit the authorized operator allowlist.
+# A player must be both OP and present in that allowlist.
+
+execution:
+  agent-working-directory: "."
+  chat-timeout-seconds: 300
+  agent-timeout-seconds: 1800
+  max-concurrent-prompts: 2
+
+runtimes:
+  retain-releases: 2
+  connect-timeout-seconds: 20
+  download-timeout-seconds: 900
+  codex:
+    executable: ""
+  claude:
+    executable: ""
+
+output:
+  lines-per-page: 8
+  max-line-length: 220

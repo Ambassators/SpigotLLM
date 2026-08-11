@@ -1,0 +1,16 @@
+name: SpigotLLM
+main: dev.foreground.spigotllm.SpigotLlmPlugin
+version: ${project.version}
+description: Run private Codex and Claude prompts from Minecraft.
+author: Foreground
+commands:
+  spigotllm:
+    description: Manage SpigotLLM accounts, sessions, access, and runtimes.
+    usage: /spigotllm help
+    aliases: [sllm]
+  codex:
+    description: Prompt Codex using your active session.
+    usage: /codex [agent] <prompt>
+  claude:
+    description: Prompt Claude using your active session.
+    usage: /claude [agent] <prompt>
