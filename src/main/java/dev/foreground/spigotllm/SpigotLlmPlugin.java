@@ -1,6 +1,7 @@
 package dev.foreground.spigotllm;
 
 import dev.foreground.spigotllm.access.AccessStore;
+import dev.foreground.spigotllm.agent.AgentToolRuntime;
 import dev.foreground.spigotllm.account.LinkCodeCapture;
 import dev.foreground.spigotllm.account.SecretStore;
 import dev.foreground.spigotllm.console.AgentConsoleBridge;
@@ -25,6 +26,7 @@ import java.util.Map;
 public final class SpigotLlmPlugin extends JavaPlugin {
     private PromptCoordinator coordinator;
     private AgentConsoleBridge consoleBridge;
+    private AgentToolRuntime toolRuntime;
 
     @Override
     public void onEnable() {
@@ -49,12 +51,30 @@ public final class SpigotLlmPlugin extends JavaPlugin {
                     getConfig().getString("execution.agent-working-directory", "."));
             int chatTimeout = getConfig().getInt("execution.chat-timeout-seconds", 300);
             int agentTimeout = getConfig().getInt("execution.agent-timeout-seconds", 1800);
+            Path consoleLog = resolveFilePath(getConfig().getString("agent-console.log-file", "logs/latest.log"));
+            toolRuntime = new AgentToolRuntime(
+                    this,
+                    access,
+                    data.resolve("agent-tools"),
+                    consoleLog,
+                    getConfig().getInt("agent-tools.max-resources-per-owner", 64),
+                    getConfig().getInt("agent-tools.max-handles-per-owner", 512),
+                    getConfig().getInt("agent-tools.max-source-bytes", 131072),
+                    getConfig().getInt("agent-tools.max-queued-events", 5000),
+                    getConfig().getLong("agent-tools.max-event-stream-bytes", 5242880L),
+                    getConfig().getInt("agent-tools.compiler-threads", 1),
+                    getConfig().getLong("agent-tools.slow-main-thread-millis", 50L),
+                    getConfig().getBoolean("agent-tools.load-persistent", true),
+                    getConfig().getBoolean("agent-tools.enabled", true),
+                    getConfig().getLong("agent-tools.max-ttl-seconds", 86400L));
             consoleBridge = new AgentConsoleBridge(
                     this,
                     data.resolve("agent-console"),
-                    resolveFilePath(getConfig().getString("agent-console.log-file", "logs/latest.log")),
+                    consoleLog,
                     getConfig().getInt("agent-console.poll-ticks", 1),
-                    getConfig().getInt("agent-console.max-command-length", 2048));
+                    getConfig().getInt("agent-console.max-command-length", 2048),
+                    getConfig().getInt("agent-tools.max-request-bytes", 262144),
+                    toolRuntime);
             Map<Provider, ProviderAdapter> adapters = new EnumMap<Provider, ProviderAdapter>(Provider.class);
             adapters.put(Provider.CODEX, new CodexAdapter(
                     resolver, sessions, consoleBridge, agentWorkingDirectory, chatTimeout, agentTimeout));
@@ -76,13 +96,16 @@ public final class SpigotLlmPlugin extends JavaPlugin {
             getServer().getPluginManager().registerEvents(codeCapture, this);
 
             SpigotLlmCommand commands = new SpigotLlmCommand(
-                    access, sessions, installer, coordinator, messenger, codeCapture);
+                    access, sessions, installer, coordinator, messenger, codeCapture, toolRuntime);
             register("spigotllm", commands);
             register("codex", commands);
             register("claude", commands);
 
             getLogger().info("Enabled. No player is trusted by default; authorize OP UUIDs from console with /sllm access add.");
             getLogger().warning("Agent mode has access to the live server log and can dispatch commands as the real console.");
+            if (getConfig().getBoolean("agent-tools.enabled", true)) {
+                getLogger().warning("Agent runtime tools execute unsandboxed Java and deep reflection with full server/JVM authority.");
+            }
         } catch (Exception e) {
             getLogger().severe("SpigotLLM could not initialize: " + e.getMessage());
             getServer().getPluginManager().disablePlugin(this);
@@ -93,6 +116,7 @@ public final class SpigotLlmPlugin extends JavaPlugin {
     public void onDisable() {
         if (coordinator != null) coordinator.shutdown();
         if (consoleBridge != null) consoleBridge.shutdown();
+        if (toolRuntime != null) toolRuntime.close();
     }
 
     private void register(String name, SpigotLlmCommand commands) {

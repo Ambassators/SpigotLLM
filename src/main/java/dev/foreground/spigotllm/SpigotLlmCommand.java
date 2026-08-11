@@ -2,6 +2,8 @@ package dev.foreground.spigotllm;
 
 import dev.foreground.spigotllm.access.AccessStore;
 import dev.foreground.spigotllm.access.AuthorizedOperator;
+import dev.foreground.spigotllm.agent.AgentToolRuntime;
+import dev.foreground.spigotllm.agent.runtime.ResourceMetadata;
 import dev.foreground.spigotllm.account.LinkCodeCapture;
 import dev.foreground.spigotllm.model.Identity;
 import dev.foreground.spigotllm.model.Provider;
@@ -40,16 +42,18 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
     private final PromptCoordinator coordinator;
     private final PrivateMessenger messenger;
     private final LinkCodeCapture codeCapture;
+    private final AgentToolRuntime toolRuntime;
 
     public SpigotLlmCommand(AccessStore access, SessionStore sessions, RuntimeInstaller runtimes,
                             PromptCoordinator coordinator, PrivateMessenger messenger,
-                            LinkCodeCapture codeCapture) {
+                            LinkCodeCapture codeCapture, AgentToolRuntime toolRuntime) {
         this.access = access;
         this.sessions = sessions;
         this.runtimes = runtimes;
         this.coordinator = coordinator;
         this.messenger = messenger;
         this.codeCapture = codeCapture;
+        this.toolRuntime = toolRuntime;
     }
 
     @Override
@@ -146,6 +150,8 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             handleEffort(sender, Arrays.copyOfRange(args, 1, args.length));
         } else if ("runtime".equals(sub)) {
             handleRuntime(sender, Arrays.copyOfRange(args, 1, args.length));
+        } else if ("tools".equals(sub)) {
+            handleTools(sender, Arrays.copyOfRange(args, 1, args.length));
         } else if ("cancel".equals(sub)) {
             Provider provider = args.length > 1 && !"all".equalsIgnoreCase(args[1])
                     ? requireProvider(sender, args[1]) : null;
@@ -165,6 +171,50 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             messenger.more(sender, page);
         } else {
             messenger.error(sender, "Unknown subcommand. Use /sllm help.");
+        }
+    }
+
+    private void handleTools(CommandSender sender, String[] args) {
+        String action = args.length == 0 ? "list" : args[0].toLowerCase(Locale.ROOT);
+        try {
+            if ("list".equals(action)) {
+                List<ResourceMetadata> entries = toolRuntime.listAll();
+                messenger.info(sender, "Agent runtime resources: " + entries.size());
+                for (ResourceMetadata entry : entries) {
+                    messenger.info(sender, entry.getOwner() + " / " + entry.getId() + " ["
+                            + entry.getType() + ", " + entry.getLifecycle() + ", "
+                            + entry.getState().name().toLowerCase(Locale.ROOT) + "]");
+                }
+                return;
+            }
+            if ("purge".equals(action)) {
+                if (!(sender instanceof ConsoleCommandSender)) {
+                    messenger.error(sender, "Only the real server console can purge agent runtime resources.");
+                    return;
+                }
+                if (args.length != 3 || !("transient".equalsIgnoreCase(args[1]) || "all".equalsIgnoreCase(args[1]))
+                        || !"confirm".equalsIgnoreCase(args[2])) {
+                    messenger.error(sender, "Usage: /sllm tools purge <transient|all> confirm");
+                    return;
+                }
+                int removed = toolRuntime.operatorPurge("all".equalsIgnoreCase(args[1]));
+                messenger.success(sender, "Removed " + removed + " agent runtime resources.");
+                return;
+            }
+            if (!("inspect".equals(action) || "enable".equals(action) || "disable".equals(action)
+                    || "remove".equals(action)) || args.length != 3) {
+                messenger.error(sender, "Usage: /sllm tools <list|inspect|enable|disable|remove> [owner] [resource-id]");
+                return;
+            }
+            ResourceMetadata result = "inspect".equals(action) ? toolRuntime.operatorInspect(args[1], args[2])
+                    : "enable".equals(action) ? toolRuntime.operatorEnable(args[1], args[2])
+                    : "disable".equals(action) ? toolRuntime.operatorDisable(args[1], args[2])
+                    : toolRuntime.operatorRemove(args[1], args[2]);
+            messenger.success(sender, result.getOwner() + " / " + result.getId() + " is "
+                    + result.getState().name().toLowerCase(Locale.ROOT) + ".");
+            if (result.getFailure() != null) messenger.error(sender, result.getFailure());
+        } catch (RuntimeException e) {
+            messenger.error(sender, e.getMessage() == null ? "Agent runtime operation failed." : e.getMessage());
         }
     }
 
@@ -681,6 +731,7 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
         messenger.info(sender, "/sllm threads [provider] [chat|agent]");
         messenger.info(sender, "/sllm effort <provider> <chat|agent> [default|level]");
         messenger.info(sender, "/sllm runtime <install|update|rollback|status> <provider|all>");
+        messenger.info(sender, "/sllm tools <list|inspect|enable|disable|remove> - manage agent runtime resources");
         messenger.info(sender, "/sllm cancel [provider|all] and /sllm more [page]");
         messenger.info(sender, "WARNING: agent mode grants OS access and can dispatch real server-console commands.");
         if (sender instanceof ConsoleCommandSender) {
@@ -748,7 +799,7 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             }
             return Collections.emptyList();
         }
-        if (args.length == 1) return matching(args[0], "help", "prompt", "account", "thread", "threads", "effort", "runtime", "cancel", "more", "access");
+        if (args.length == 1) return matching(args[0], "help", "prompt", "account", "thread", "threads", "effort", "runtime", "tools", "cancel", "more", "access");
         if (args.length == 2 && "access".equalsIgnoreCase(args[0]) && sender instanceof ConsoleCommandSender) {
             return matching(args[1], "add", "remove", "list");
         }
@@ -760,6 +811,13 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             return matching(args[1], "codex", "claude");
         }
         if (args.length == 2 && "runtime".equalsIgnoreCase(args[0])) return matching(args[1], "install", "update", "rollback", "status");
+        if (args.length == 2 && "tools".equalsIgnoreCase(args[0])) return matching(args[1], "list", "inspect", "enable", "disable", "remove", "purge");
+        if (args.length == 3 && "tools".equalsIgnoreCase(args[0]) && "purge".equalsIgnoreCase(args[1])) {
+            return matching(args[2], "transient", "all");
+        }
+        if (args.length == 4 && "tools".equalsIgnoreCase(args[0]) && "purge".equalsIgnoreCase(args[1])) {
+            return matching(args[3], "confirm");
+        }
         if (args.length == 3 && "account".equalsIgnoreCase(args[0])) {
             return matching(args[2], "codex", "claude");
         }

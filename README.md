@@ -142,6 +142,15 @@ already have both levels of server access. `chat` mode disables Claude tools,
 does not receive the console bridge, and gives Codex a read-only sandbox rooted
 in a plugin-managed empty workspace.
 
+When `agent-tools.enabled` is true, agent mode can additionally compile and run
+arbitrary Java on Bukkit's primary thread and use deep reflection against live
+server objects. This is intentionally **not a sandbox or security boundary**.
+Bad generated code can disclose secrets, corrupt live state, deadlock the main
+thread, crash the JVM, or make permanent filesystem and server changes. Java
+code running on the primary thread cannot be forcibly interrupted. Use this
+feature only with providers and operators that are trusted as fully as the
+Minecraft server operating-system account.
+
 ## Agent console bridge
 
 Codex and Claude automatically receive console access during an authorized
@@ -165,6 +174,171 @@ identity, provider, and named thread. The bridge intentionally does not add a
 separate in-game console command: access is exercised by the provider agent and
 still requires the invoking player to be both an OP and present in the
 console-managed SpigotLLM allowlist.
+
+### JSON tool protocol
+
+Each active agent prompt receives a private, owner-scoped lease directory. A
+client writes an entire request to a temporary file and atomically renames it
+to:
+
+```text
+<lease>/requests/<id>.json
+```
+
+SpigotLLM writes the matching response atomically to
+`<lease>/responses/<id>.json`. Asynchronous hook, command, task, and module
+output is appended to the bounded `<lease>/events.jsonl` stream. The legacy
+`command.request` console-command protocol remains available for compatibility.
+Requests use this envelope:
+
+```json
+{
+  "id": "server-state-1",
+  "operation": "snapshot.server",
+  "arguments": {},
+  "lifecycle": "prompt"
+}
+```
+
+Responses contain the same `id`, a `status` of `success` or `error`, and either
+`result` or a structured `error`. Files larger than
+`agent-tools.max-request-bytes`, malformed
+JSON, duplicate IDs, unknown operations, and resources over the configured
+owner limits are rejected without executing them. Runtime objects that cannot
+be represented as JSON are returned as opaque handles usable only by the same
+lease owner.
+
+Available operation families are:
+
+- `snapshot.server`, `snapshot.players`, `snapshot.worlds`, `snapshot.plugins`,
+  `snapshot.memory`, `snapshot.scheduler`, and `snapshot.ticks`; plus
+  `log.search`, `console.execute`, and `message.send`.
+- `code.compile`, `code.run`, `code.runLater`, `code.runTimer`, and
+  `code.cancel`: compile Java snippets away from the server thread, then run
+  them on the primary thread through `BukkitRunnable`.
+- `reflect.root`, `reflect.class`, `reflect.describe`, `reflect.get`,
+  `reflect.set`, `reflect.invoke`, `reflect.construct`, `reflect.indexGet`,
+  `reflect.indexSet`, and `reflect.release`: inspect or modify live objects,
+  including inherited/private members, arrays, lists, and maps.
+- `event.watch` and `event.await`: observe Bukkit events with priority,
+  cancelled-event handling, property filters, selected captured fields, match
+  limits, and timeouts. Event mutation belongs in a Java mini-module.
+- `command.create` and related `command.*` operations: create temporary commands
+  with aliases, usage, tab completions, invocation events, replies, templated
+  actions, and an explicit sender-access policy.
+- `resource.list`, `resource.inspect`, `resource.extend`, `resource.enable`,
+  `resource.disable`, and `resource.remove`: manage owned hooks, commands,
+  scheduled work, snippets, handles, and modules.
+- `module.compile`, `module.install`, `module.enable`, `module.disable`, and
+  `module.remove`: validate and manage isolated Java mini-modules. Persistent
+  modules store their source and are recompiled after a restart.
+
+All operations that touch Bukkit state, including reflection, are marshalled
+onto the primary server thread. Compilation is performed on the configured
+compiler worker. Main-thread executions taking longer than
+`agent-tools.slow-main-thread-millis` are audited as slow.
+
+### Java snippets
+
+A one-shot request supplies a Java method body. The body receives
+`MiniContext context`, Bukkit `Server server`, and `emit(Object)` for writing
+JSON-safe values or handles to the response/event stream:
+
+```json
+{
+  "id": "online-count",
+  "operation": "code.run",
+  "arguments": {
+    "source": "emit(server.getOnlinePlayers().size()); return server.getOnlinePlayers().size();"
+  },
+  "lifecycle": "prompt"
+}
+```
+
+Use `code.runLater` with a tick delay or `code.runTimer` with a delay, period,
+and maximum run count for scheduled snippets. Use `code.cancel` with the
+returned resource ID to stop scheduled work. One-shot snippets never survive a
+restart. Behavior that must be restored after restart must be installed as a
+persistent mini-module.
+
+Reflection values can be ordinary JSON primitives, enums, UUIDs, arrays, or
+opaque handles returned by another operation. Supplying exact parameter type
+names makes overloaded method and constructor selection unambiguous. The
+bridge walks inherited members and attempts private access, but JVM module
+boundaries can still reject access. It does not use `Unsafe`, native memory,
+instrumentation, or automatic `--add-opens` changes, and final/static-final
+writes are not guaranteed to be supported by the running JVM.
+
+### Java mini-modules
+
+Mini-modules are complete Java compilation units compiled by the bundled
+Janino compiler in isolated classloaders. The declared entry class implements
+`MiniModule`; startup and shutdown run on Bukkit's primary thread. A minimal
+module looks like:
+
+```java
+import dev.foreground.spigotllm.agent.code.MiniContext;
+import dev.foreground.spigotllm.agent.code.MiniModule;
+import org.bukkit.scheduler.BukkitRunnable;
+
+public final class HeartbeatModule implements MiniModule {
+    private MiniContext context;
+
+    public void onEnable(MiniContext context) {
+        this.context = context;
+        context.runTimer(new BukkitRunnable() {
+            public void run() {
+                context.emit("online=" + context.server().getOnlinePlayers().size());
+            }
+        }, 0L, 200L);
+    }
+
+    public void onDisable() {
+        context.emit("heartbeat stopped");
+    }
+}
+```
+
+`MiniContext` also provides tracked event-listener and temporary-command
+registration, synchronous/delayed/repeating tasks, logging, messaging, command
+dispatch, reflection handles, output emission, and direct Bukkit `Server`
+access. Resources registered through the context are unregistered when the
+module stops. An uncaught callback failure disables that module and emits an
+error. A persistent module that cannot compile or start during boot is
+quarantined without preventing SpigotLLM from enabling.
+
+### Lifecycles and operator controls
+
+The default lifecycle is `prompt`, which cleans resources when the originating
+prompt succeeds, fails, is cancelled, or times out. `ttl` keeps a resource for
+a requested duration up to `agent-tools.max-ttl-seconds`; `reboot` keeps it
+until plugin/server shutdown; and `persistent` stores restorable mini-module
+source across restarts. Reflection handles are always memory-only and never
+survive plugin disable. Event output is capped by
+`agent-tools.max-queued-events` and `agent-tools.max-event-stream-bytes`.
+Resource ownership is scoped to the authorized identity plus provider thread,
+so concurrent Codex and Claude threads cannot collide with or manage one
+another's resources even when they choose the same resource ID.
+Use a string for the non-TTL lifecycles. A TTL request uses, for example,
+`"lifecycle": {"type": "ttl", "ttlSeconds": 300}`.
+
+The console and authorized operators can inspect and manage runtime resources:
+
+```text
+sllm tools list
+sllm tools inspect <owner> <resource-id>
+sllm tools disable <owner> <resource-id>
+sllm tools enable <owner> <resource-id>
+sllm tools remove <owner> <resource-id>
+sllm tools purge <transient|all> confirm
+```
+
+`purge` is console-only. Temporary command labels and aliases may not replace
+existing commands. Their sender policy may allow console, players, OPs,
+authorized SpigotLLM operators, a Bukkit permission, or everyone; the default
+allows only the console and authorized operators. Creation, persistence,
+registration, reflected member names, failures, and removal are audited, while
+argument values, field values, prompt bodies, and responses are not logged.
 
 ## Tests
 

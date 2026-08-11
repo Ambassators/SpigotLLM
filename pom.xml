@@ -61,6 +61,16 @@
             <version>1.78.1</version>
         </dependency>
         <dependency>
+            <groupId>org.codehaus.janino</groupId>
+            <artifactId>janino</artifactId>
+            <version>3.1.12</version>
+        </dependency>
+        <dependency>
+            <groupId>org.codehaus.janino</groupId>
+            <artifactId>commons-compiler</artifactId>
+            <version>3.1.12</version>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${junit.version}</version>
@@ -129,6 +139,14 @@
                                 <relocation>
                                     <pattern>org.bouncycastle</pattern>
                                     <shadedPattern>dev.foreground.spigotllm.lib.bouncycastle</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.codehaus.janino</pattern>
+                                    <shadedPattern>dev.foreground.spigotllm.lib.janino</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.codehaus.commons.compiler</pattern>
+                                    <shadedPattern>dev.foreground.spigotllm.lib.commonscompiler</shadedPattern>
                                 </relocation>
                             </relocations>
                             <filters>

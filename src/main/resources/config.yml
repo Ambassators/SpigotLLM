@@ -14,6 +14,21 @@ agent-console:
   poll-ticks: 1
   max-command-length: 2048
 
+# Agent mode only. These tools compile and run unsandboxed Java and can inspect
+# or mutate the live server through reflection. They have full server authority.
+agent-tools:
+  enabled: true
+  max-request-bytes: 262144
+  max-source-bytes: 131072
+  max-resources-per-owner: 64
+  max-handles-per-owner: 512
+  max-ttl-seconds: 86400
+  max-queued-events: 5000
+  max-event-stream-bytes: 5242880
+  slow-main-thread-millis: 50
+  compiler-threads: 1
+  load-persistent: true
+
 runtimes:
   retain-releases: 2
   connect-timeout-seconds: 20
