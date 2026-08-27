@@ -9,6 +9,7 @@ import dev.foreground.spigotllm.util.JsonFiles;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -43,7 +44,11 @@ public final class SessionStore {
         String defaultName = mode == SessionMode.AGENT ? "default-agent" : "default-chat";
         existing = find(document, provider, mode, defaultName);
         if (existing == null) {
-            existing = new SessionRecord(defaultName, provider, mode);
+            if (provider == Provider.CODEX && mode == SessionMode.AGENT) {
+                existing = newAutoNamedCodexAgent(document);
+            } else {
+                existing = new SessionRecord(defaultName, provider, mode);
+            }
             document.sessions.add(existing);
         }
         document.active.put(activeKey, existing.getName());
@@ -63,6 +68,31 @@ public final class SessionStore {
         SessionRecord record = new SessionRecord(name, provider, mode);
         document.sessions.add(record);
         document.active.put(activeKey(provider, mode), name);
+        save(identity, document);
+        return record;
+    }
+
+    /** Creates and selects an untitled Codex agent thread. Its first prompt supplies the name. */
+    public synchronized SessionRecord createCodexAgentThread(Identity identity) throws IOException {
+        SessionDocument document = document(identity);
+        SessionRecord record = newAutoNamedCodexAgent(document);
+        document.sessions.add(record);
+        document.active.put(activeKey(Provider.CODEX, SessionMode.AGENT), record.getName());
+        save(identity, document);
+        return record;
+    }
+
+    /** Applies Codex's first-message display title plus a command-safe identifier. */
+    public synchronized SessionRecord prepareCodexAgentPrompt(Identity identity, String prompt) throws IOException {
+        SessionRecord record = getOrCreateActive(identity, Provider.CODEX, SessionMode.AGENT);
+        if (!record.isAutoNamingPending()) return record;
+
+        SessionDocument document = document(identity);
+        record.setName(uniqueName(document, Provider.CODEX, SessionMode.AGENT, codexTitle(prompt), record));
+        record.setGeneratedTitle(codexDisplayTitle(prompt));
+        record.setAutoNamingPending(false);
+        record.touch();
+        document.active.put(activeKey(Provider.CODEX, SessionMode.AGENT), record.getName());
         save(identity, document);
         return record;
     }
@@ -90,6 +120,7 @@ public final class SessionStore {
             return false;
         }
         record.setName(newName);
+        record.setGeneratedTitle(null);
         record.touch();
         String activeKey = activeKey(provider, mode);
         if (oldName.equalsIgnoreCase(document.active.get(activeKey))) {
@@ -197,6 +228,45 @@ public final class SessionStore {
             }
         }
         return null;
+    }
+
+    private SessionRecord newAutoNamedCodexAgent(SessionDocument document) {
+        String temporary = uniqueName(document, Provider.CODEX, SessionMode.AGENT,
+                "new-" + java.util.UUID.randomUUID().toString().substring(0, 8), null);
+        SessionRecord record = new SessionRecord(temporary, Provider.CODEX, SessionMode.AGENT);
+        record.setAutoNamingPending(true);
+        return record;
+    }
+
+    static String codexTitle(String prompt) {
+        String value = prompt == null ? "" : prompt.trim();
+        value = Normalizer.normalize(value, Normalizer.Form.NFKD).replaceAll("\\p{M}+", "");
+        value = value.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9]+", "-");
+        value = value.replaceAll("^-+|-+$", "");
+        if (value.isEmpty()) value = "codex-thread";
+        if (value.length() > 32) {
+            value = value.substring(0, 32).replaceAll("-+$", "");
+        }
+        return value.isEmpty() ? "codex-thread" : value;
+    }
+
+    static String codexDisplayTitle(String prompt) {
+        String value = prompt == null ? "" : prompt.trim().replaceAll("\\s+", " ");
+        if (value.isEmpty()) value = "Codex thread";
+        return value.length() <= 80 ? value : value.substring(0, 77) + "...";
+    }
+
+    private String uniqueName(SessionDocument document, Provider provider, SessionMode mode,
+                              String requested, SessionRecord ignored) {
+        String candidate = requested;
+        int number = 2;
+        while (true) {
+            SessionRecord collision = find(document, provider, mode, candidate);
+            if (collision == null || collision == ignored) return candidate;
+            String suffix = "-" + number++;
+            int baseLength = Math.min(requested.length(), 32 - suffix.length());
+            candidate = requested.substring(0, baseLength).replaceAll("-+$", "") + suffix;
+        }
     }
 
     private String activeKey(Provider provider, SessionMode mode) {

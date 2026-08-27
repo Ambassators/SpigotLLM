@@ -2,7 +2,9 @@
 # A player must be both OP and present in that allowlist.
 
 execution:
-  agent-working-directory: "."
+  # Agent-mode GitHub repositories and source changes live here. Relative paths
+  # are resolved inside plugins/SpigotLLM; absolute paths are explicit overrides.
+  agent-working-directory: "workspace"
   chat-timeout-seconds: 300
   agent-timeout-seconds: 1800
   max-concurrent-prompts: 2

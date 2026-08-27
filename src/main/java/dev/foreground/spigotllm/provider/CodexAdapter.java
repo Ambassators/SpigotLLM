@@ -24,18 +24,18 @@ public final class CodexAdapter implements ProviderAdapter {
     private final RuntimeResolver runtimes;
     private final SessionStore sessions;
     private final AgentConsoleBridge consoleBridge;
-    private final Path agentWorkingDirectory;
+    private final AgentWorkspace agentWorkspace;
     private final int chatTimeout;
     private final int agentTimeout;
     private final ProcessSupport processes = new ProcessSupport();
     private final ActiveProcesses active = new ActiveProcesses();
 
     public CodexAdapter(RuntimeResolver runtimes, SessionStore sessions, AgentConsoleBridge consoleBridge,
-                        Path agentWorkingDirectory, int chatTimeout, int agentTimeout) {
+                        AgentWorkspace agentWorkspace, int chatTimeout, int agentTimeout) {
         this.runtimes = runtimes;
         this.sessions = sessions;
         this.consoleBridge = consoleBridge;
-        this.agentWorkingDirectory = agentWorkingDirectory;
+        this.agentWorkspace = agentWorkspace;
         this.chatTimeout = chatTimeout;
         this.agentTimeout = agentTimeout;
     }
@@ -50,10 +50,10 @@ public final class CodexAdapter implements ProviderAdapter {
             Path codexHome = identityRoot.resolve("codex-home");
             Files.createDirectories(codexHome);
             boolean resume = session.getProviderSessionId() != null && !session.getProviderSessionId().isEmpty();
+            Path cwd = workingDirectory(identityRoot, session);
             List<String> command = new ArrayList<String>();
             command.add(executable.toString());
             command.add("exec");
-            if (resume) command.add("resume");
             command.add("--json");
             command.add("--skip-git-repo-check");
             command.add("--ignore-user-config");
@@ -72,7 +72,8 @@ public final class CodexAdapter implements ProviderAdapter {
             if (session.getMode() == SessionMode.AGENT) {
                 consoleLease = consoleBridge.open(identity, session);
                 command.add("-c");
-                command.add("developer_instructions=" + tomlString(consoleLease.instructions()));
+                command.add("developer_instructions="
+                        + tomlString(consoleLease.instructions() + agentWorkspace.instructions()));
                 command.add("--dangerously-bypass-approvals-and-sandbox");
             } else {
                 command.add("-c");
@@ -84,17 +85,16 @@ public final class CodexAdapter implements ProviderAdapter {
                     command.add("read-only");
                 }
             }
+            command.add("--cd");
+            command.add(cwd.toString());
             if (resume) {
+                command.add("resume");
                 command.add(session.getProviderSessionId());
-            } else {
-                command.add("--cd");
-                Path cwd = workingDirectory(identityRoot, session);
-                command.add(cwd.toString());
             }
             command.add("-");
 
             ProcessBuilder builder = new ProcessBuilder(command);
-            builder.directory(workingDirectory(identityRoot, session).toFile());
+            builder.directory(cwd.toFile());
             Map<String, String> env = builder.environment();
             env.put("CODEX_HOME", codexHome.toAbsolutePath().toString());
             env.put("NO_COLOR", "1");
@@ -193,8 +193,8 @@ public final class CodexAdapter implements ProviderAdapter {
 
     private Path workingDirectory(Path identityRoot, SessionRecord session) throws IOException {
         if (session.getMode() == SessionMode.AGENT) {
-            Files.createDirectories(agentWorkingDirectory);
-            return agentWorkingDirectory;
+            Files.createDirectories(agentWorkspace.root());
+            return agentWorkspace.root();
         }
         Path isolated = identityRoot.resolve("chat-workspaces").resolve("codex").normalize();
         Files.createDirectories(isolated);

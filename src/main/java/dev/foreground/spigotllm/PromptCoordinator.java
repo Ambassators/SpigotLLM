@@ -76,8 +76,8 @@ public final class PromptCoordinator {
         }
         String effort = session.getReasoningEffort().isDefault()
                 ? "provider-default" : session.getReasoningEffort().id();
-        messenger.info(sender, "Sending a private " + mode.id() + " prompt to " + provider.id()
-                + " (thread " + session.getName() + ", effort " + effort + ")...");
+        messenger.info(sender, "Using " + provider.id() + " thread: " + session.getDisplayName()
+                + " (" + mode.id() + ", effort " + effort + "). Sending prompt...");
         try {
             executor.execute(new Runnable() {
                 @Override public void run() {
@@ -96,7 +96,7 @@ public final class PromptCoordinator {
                         if (adapter == null) throw new ProviderException("Provider is not configured.");
                         PromptResult result = adapter.prompt(identity, session, prompt, progress);
                         sessions.updateProviderId(identity, session, result.providerSessionId());
-                        messenger.response(sender, provider.id(), session.getName(), result.response());
+                        messenger.response(sender, provider.id(), session.getDisplayName(), result.response());
                     } catch (ProviderException e) {
                         messenger.error(sender, e.getMessage());
                     } catch (IOException e) {

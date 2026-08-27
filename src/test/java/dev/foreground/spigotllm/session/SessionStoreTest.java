@@ -70,4 +70,33 @@ final class SessionStoreTest {
         assertFalse(SessionStore.validName("../escape"));
         assertFalse(SessionStore.validName("contains spaces"));
     }
+
+    @Test
+    void autoNamesCodexAgentThreadsFromTheirFirstPrompt() throws Exception {
+        Path root = temporaryDirectory.resolve("identities");
+        SessionStore store = new SessionStore(root);
+
+        SessionRecord first = store.getOrCreateActive(Identity.SERVER, Provider.CODEX, SessionMode.AGENT);
+        assertTrue(first.isAutoNamingPending());
+        assertTrue(first.getName().startsWith("new-"));
+
+        SessionRecord named = store.prepareCodexAgentPrompt(
+                Identity.SERVER, "Please fix the server startup crash!");
+        assertEquals("please-fix-the-server-startup-cr", named.getName());
+        assertEquals("Please fix the server startup crash!", named.getDisplayName());
+        assertFalse(named.isAutoNamingPending());
+        assertEquals(named.getName(), store.getOrCreateActive(
+                Identity.SERVER, Provider.CODEX, SessionMode.AGENT).getName());
+
+        SessionRecord second = store.createCodexAgentThread(Identity.SERVER);
+        assertTrue(second.isAutoNamingPending());
+        assertEquals("please-fix-the-server-startup-2", store.prepareCodexAgentPrompt(
+                Identity.SERVER, "Please fix the server startup crash!").getName());
+
+        SessionStore reloaded = new SessionStore(root);
+        SessionRecord reloadedActive = reloaded.getOrCreateActive(
+                Identity.SERVER, Provider.CODEX, SessionMode.AGENT);
+        assertEquals("please-fix-the-server-startup-2", reloadedActive.getName());
+        assertEquals("Please fix the server startup crash!", reloadedActive.getDisplayName());
+    }
 }

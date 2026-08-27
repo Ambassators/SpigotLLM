@@ -17,6 +17,7 @@ import dev.foreground.spigotllm.runtime.RuntimeInstaller;
 import dev.foreground.spigotllm.session.SessionRecord;
 import dev.foreground.spigotllm.session.SessionStore;
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -104,22 +105,32 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             handleDirectEffort(sender, provider, Arrays.copyOfRange(args, 1, args.length));
             return;
         }
-        SessionMode mode = SessionMode.CHAT;
+        SessionMode mode = provider == Provider.CODEX ? SessionMode.AGENT : SessionMode.CHAT;
         int promptStart = 0;
         if (args.length > 0 && SessionMode.parse(args[0]) != null) {
             mode = SessionMode.parse(args[0]);
             promptStart = 1;
         }
+        if (provider == Provider.CODEX && mode == SessionMode.CHAT) {
+            messenger.error(sender, "Codex chat mode has been removed. Use /codex <prompt>; Codex now runs as an agent by default.");
+            return;
+        }
         if (args.length <= promptStart) {
-            messenger.error(sender, "Usage: /" + provider.id() + " [chat|agent] <prompt>");
+            messenger.error(sender, provider == Provider.CODEX
+                    ? "Usage: /codex <prompt>"
+                    : "Usage: /claude [chat|agent] <prompt>");
             return;
         }
         submitPrompt(sender, provider, mode, join(args, promptStart));
     }
 
     private void handleMain(CommandSender sender, String[] args) {
-        if (args.length == 0 || "help".equalsIgnoreCase(args[0])) {
-            help(sender);
+        if (args.length == 0) {
+            shortHelp(sender);
+            return;
+        }
+        if ("help".equalsIgnoreCase(args[0])) {
+            fullHelp(sender);
             return;
         }
         String sub = args[0].toLowerCase(Locale.ROOT);
@@ -224,8 +235,19 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             messenger.error(sender, "Prompt cannot be empty.");
         } else if (clean.length() > MAX_PROMPT_LENGTH) {
             messenger.error(sender, "Prompt is too long (maximum " + MAX_PROMPT_LENGTH + " characters).");
+        } else if (provider == Provider.CODEX && mode == SessionMode.CHAT) {
+            messenger.error(sender, "Codex chat mode has been removed. Use Codex agent mode.");
         } else {
-            coordinator.submit(sender, Identity.from(sender), provider, mode, clean);
+            Identity identity = Identity.from(sender);
+            if (provider == Provider.CODEX) {
+                try {
+                    sessions.prepareCodexAgentPrompt(identity, clean);
+                } catch (IOException e) {
+                    messenger.error(sender, "Could not prepare the Codex thread: " + e.getMessage());
+                    return;
+                }
+            }
+            coordinator.submit(sender, identity, provider, mode, clean);
         }
     }
 
@@ -389,7 +411,7 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
                     String effort = record.getReasoningEffort().isDefault()
                             ? "provider-default" : record.getReasoningEffort().id();
                     messenger.info(sender, record.getProvider().id() + " " + record.getMode().id() + " "
-                            + record.getName() + " [effort=" + effort + "]");
+                            + record.getDisplayName() + " [effort=" + effort + "]");
                 }
                 return;
             }
@@ -438,13 +460,17 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
         Provider provider = requireProvider(sender, args[0]);
         SessionMode mode = requireMode(sender, args[1]);
         if (provider == null || mode == null) return;
+        if (provider == Provider.CODEX && mode == SessionMode.CHAT) {
+            messenger.error(sender, "Codex chat mode has been removed.");
+            return;
+        }
         Identity identity = Identity.from(sender);
         try {
             SessionRecord session = sessions.getOrCreateActive(identity, provider, mode);
             if (args.length == 2) {
                 String current = session.getReasoningEffort().isDefault()
                         ? "provider-default (no SpigotLLM override)" : session.getReasoningEffort().id();
-                messenger.info(sender, provider.id() + " " + mode.id() + " session " + session.getName()
+                messenger.info(sender, provider.id() + " " + mode.id() + " session " + session.getDisplayName()
                         + " uses " + current + ". Options: " + ReasoningEffort.choices(provider));
                 return;
             }
@@ -461,7 +487,7 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             sessions.updateReasoningEffort(identity, session, effort);
             String selected = effort.isDefault() ? "provider-default" : effort.id();
             messenger.success(sender, "Set " + provider.id() + " " + mode.id() + " session "
-                    + session.getName() + " to " + selected + " effort.");
+                    + session.getDisplayName() + " to " + selected + " effort.");
         } catch (IOException e) {
             messenger.error(sender, "Could not update session effort: " + e.getMessage());
         } catch (IllegalArgumentException e) {
@@ -470,14 +496,20 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
     }
 
     private void handleDirectEffort(CommandSender sender, Provider provider, String[] args) {
-        SessionMode mode = SessionMode.CHAT;
+        SessionMode mode = provider == Provider.CODEX ? SessionMode.AGENT : SessionMode.CHAT;
         int valueIndex = 0;
         if (args.length > 0 && SessionMode.parse(args[0]) != null) {
             mode = SessionMode.parse(args[0]);
             valueIndex = 1;
         }
         if (args.length - valueIndex > 1) {
-            messenger.error(sender, "Usage: /" + provider.id() + " effort [chat|agent] [level|default]");
+            messenger.error(sender, provider == Provider.CODEX
+                    ? "Usage: /codex effort [level|default]"
+                    : "Usage: /claude effort [chat|agent] [level|default]");
+            return;
+        }
+        if (provider == Provider.CODEX && mode == SessionMode.CHAT) {
+            messenger.error(sender, "Codex chat mode has been removed.");
             return;
         }
         List<String> forwarded = new ArrayList<String>();
@@ -494,7 +526,12 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
                 threadUsage(sender, provider);
                 return;
             }
-            SessionMode mode = args.length == 2 ? requireMode(sender, args[1]) : SessionMode.CHAT;
+            SessionMode mode = args.length == 2 ? requireMode(sender, args[1])
+                    : provider == Provider.CODEX ? SessionMode.AGENT : SessionMode.CHAT;
+            if (provider == Provider.CODEX && mode == SessionMode.CHAT) {
+                messenger.error(sender, "Codex chat mode has been removed.");
+                return;
+            }
             if (mode != null) showCurrentThread(sender, provider, mode);
             return;
         }
@@ -513,21 +550,34 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             return;
         }
         int valueIndex = 1;
-        SessionMode mode = SessionMode.CHAT;
+        SessionMode mode = provider == Provider.CODEX ? SessionMode.AGENT : SessionMode.CHAT;
         if (args.length > valueIndex && SessionMode.parse(args[valueIndex]) != null) {
             mode = SessionMode.parse(args[valueIndex]);
             valueIndex++;
         }
         int remaining = args.length - valueIndex;
+        if (provider == Provider.CODEX && mode == SessionMode.CHAT) {
+            messenger.error(sender, "Codex chat mode has been removed.");
+            return;
+        }
         try {
             if ("new".equals(action)) {
-                if (remaining != 1) {
-                    messenger.error(sender, "Usage: /" + provider.id() + " thread new [chat|agent] <name>");
-                    return;
+                if (provider == Provider.CODEX) {
+                    if (remaining != 0) {
+                        messenger.error(sender, "Usage: /codex thread new");
+                        return;
+                    }
+                    sessions.createCodexAgentThread(identity);
+                    messenger.success(sender, "Started a new Codex thread. Its name will come from your first message.");
+                } else {
+                    if (remaining != 1) {
+                        messenger.error(sender, "Usage: /claude thread new [chat|agent] <name>");
+                        return;
+                    }
+                    SessionRecord created = sessions.create(identity, provider, mode, args[valueIndex]);
+                    messenger.success(sender, "Created and switched to " + provider.id() + " " + mode.id()
+                            + " thread " + created.getName() + ".");
                 }
-                SessionRecord created = sessions.create(identity, provider, mode, args[valueIndex]);
-                messenger.success(sender, "Created and switched to " + provider.id() + " " + mode.id()
-                        + " thread " + created.getName() + ".");
             } else if ("switch".equals(action) || "use".equals(action)) {
                 if (remaining != 1) {
                     messenger.error(sender, "Usage: /" + provider.id() + " thread switch [chat|agent] <name>");
@@ -580,8 +630,13 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             messenger.error(sender, "Usage: /" + provider.id() + " threads [chat|agent]");
             return;
         }
-        SessionMode mode = args.length == 1 ? requireMode(sender, args[0]) : null;
+        SessionMode mode = args.length == 1 ? requireMode(sender, args[0])
+                : provider == Provider.CODEX ? SessionMode.AGENT : null;
         if (args.length == 1 && mode == null) return;
+        if (provider == Provider.CODEX && mode == SessionMode.CHAT) {
+            messenger.error(sender, "Codex chat mode has been removed.");
+            return;
+        }
         listThreads(sender, provider, mode);
     }
 
@@ -615,30 +670,92 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
         Identity identity = Identity.from(sender);
         try {
             List<SessionRecord> records = sessions.list(identity);
+            showThreadMenuHeader(sender, provider, mode);
             int shown = 0;
             for (SessionRecord record : records) {
+                if (record.getProvider() == Provider.CODEX && record.getMode() == SessionMode.CHAT) continue;
                 if (provider != null && record.getProvider() != provider) continue;
                 if (mode != null && record.getMode() != mode) continue;
                 boolean active = sessions.isActive(identity, record);
-                messenger.info(sender, (active ? "* " : "  ") + record.getProvider().id() + " "
-                        + record.getMode().id() + " / " + record.getName() + " [effort="
-                        + effortLabel(record) + "]" + (active ? " (current)" : ""));
+                showThreadMenuEntry(sender, record, active);
                 shown++;
             }
             if (shown == 0) {
-                messenger.info(sender, "No matching threads yet. Create one with /"
-                        + (provider == null ? "codex" : provider.id()) + " thread new <name>.");
+                messenger.info(sender, "No matching threads yet. Use one of the new-thread buttons above.");
             }
         } catch (IOException e) {
             messenger.error(sender, "Could not list threads: " + e.getMessage());
         }
     }
 
+    private void showThreadMenuHeader(CommandSender sender, Provider provider, SessionMode mode) {
+        List<PrivateMessenger.Part> parts = new ArrayList<PrivateMessenger.Part>();
+        parts.add(PrivateMessenger.Part.bold(ChatColor.AQUA, "Threads "));
+        if ((provider == null || provider == Provider.CODEX) && (mode == null || mode == SessionMode.AGENT)) {
+            parts.add(PrivateMessenger.Part.run(ChatColor.GREEN, "[+ Codex]", "/codex thread new",
+                    "Start a new Codex agent thread"));
+        }
+        if (provider == null || provider == Provider.CLAUDE) {
+            if (mode == null || mode == SessionMode.CHAT) {
+                parts.add(PrivateMessenger.Part.text(ChatColor.GRAY, " "));
+                parts.add(PrivateMessenger.Part.suggest(ChatColor.GREEN, "[+ Claude Chat]",
+                        "/claude thread new chat ", "Click, then type a thread name"));
+            }
+            if (mode == null || mode == SessionMode.AGENT) {
+                parts.add(PrivateMessenger.Part.text(ChatColor.GRAY, " "));
+                parts.add(PrivateMessenger.Part.suggest(ChatColor.GREEN, "[+ Claude Agent]",
+                        "/claude thread new agent ", "Click, then type a thread name"));
+            }
+        }
+        messenger.interactive(sender, parts.toArray(new PrivateMessenger.Part[parts.size()]));
+    }
+
+    private void showThreadMenuEntry(CommandSender sender, SessionRecord record, boolean active) {
+        String provider = record.getProvider().id();
+        String mode = record.getMode().id();
+        String id = record.getName();
+        String switchCommand = record.getProvider() == Provider.CODEX
+                ? "/codex thread switch " + id
+                : "/claude thread switch " + mode + " " + id;
+        String renameCommand = record.getProvider() == Provider.CODEX
+                ? "/codex thread rename " + id + " "
+                : "/claude thread rename " + mode + " " + id + " ";
+        String deleteCommand = record.getProvider() == Provider.CODEX
+                ? "/codex thread delete " + id + " confirm"
+                : "/claude thread delete " + mode + " " + id + " confirm";
+        String hover = provider + " " + mode + " | id: " + id + " | effort: " + effortLabel(record);
+
+        List<PrivateMessenger.Part> parts = new ArrayList<PrivateMessenger.Part>();
+        parts.add(PrivateMessenger.Part.text(active ? ChatColor.GREEN : ChatColor.DARK_GRAY,
+                active ? "● " : "○ "));
+        if (active) {
+            parts.add(PrivateMessenger.Part.bold(ChatColor.GREEN, record.getDisplayName()));
+        } else {
+            parts.add(PrivateMessenger.Part.run(ChatColor.AQUA, record.getDisplayName(), switchCommand,
+                    "Click to switch | " + hover));
+        }
+        parts.add(PrivateMessenger.Part.text(ChatColor.DARK_GRAY, " · "));
+        parts.add(PrivateMessenger.Part.text(ChatColor.GRAY, provider + "/" + mode));
+        parts.add(PrivateMessenger.Part.text(ChatColor.GRAY, " "));
+        if (active) {
+            parts.add(PrivateMessenger.Part.text(ChatColor.GREEN, "[Current]"));
+        } else {
+            parts.add(PrivateMessenger.Part.run(ChatColor.AQUA, "[Switch]", switchCommand, "Switch to this thread"));
+        }
+        parts.add(PrivateMessenger.Part.text(ChatColor.GRAY, " "));
+        parts.add(PrivateMessenger.Part.suggest(ChatColor.YELLOW, "[Rename]", renameCommand,
+                "Click, then type the new name"));
+        parts.add(PrivateMessenger.Part.text(ChatColor.GRAY, " "));
+        parts.add(PrivateMessenger.Part.suggest(ChatColor.RED, "[Delete]", deleteCommand,
+                "Click to prepare the confirmed delete command"));
+        messenger.interactive(sender, parts.toArray(new PrivateMessenger.Part[parts.size()]));
+    }
+
     private void showCurrentThread(CommandSender sender, Provider provider, SessionMode mode) {
         try {
             SessionRecord current = sessions.getOrCreateActive(Identity.from(sender), provider, mode);
-            messenger.info(sender, "Current " + provider.id() + " " + mode.id() + " thread: "
-                    + current.getName() + " [effort=" + effortLabel(current) + "].");
+            messenger.info(sender, "Current " + provider.id() + " thread: "
+                    + current.getDisplayName() + " [effort=" + effortLabel(current) + "].");
         } catch (IOException e) {
             messenger.error(sender, "Could not load the current thread: " + e.getMessage());
         }
@@ -650,9 +767,13 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
     }
 
     private void threadUsage(CommandSender sender, Provider provider) {
-        messenger.info(sender, "/" + provider.id() + " threads [chat|agent] - list threads");
-        messenger.info(sender, "/" + provider.id()
-                + " thread <current|new|switch|rename|delete> [chat|agent] ...");
+        if (provider == Provider.CODEX) {
+            messenger.info(sender, "/codex threads - list agent threads");
+            messenger.info(sender, "/codex thread new - start a new automatically named agent thread");
+        } else {
+            messenger.info(sender, "/claude threads [chat|agent] - list threads");
+            messenger.info(sender, "/claude thread <current|new|switch|rename|delete> [chat|agent] ...");
+        }
     }
 
     private void handleRuntime(final CommandSender sender, String[] args) {
@@ -721,22 +842,43 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
         return mode;
     }
 
-    private void help(CommandSender sender) {
-        messenger.info(sender, "/codex [chat|agent] <prompt> - prompt Codex privately");
-        messenger.info(sender, "/claude [chat|agent] <prompt> - prompt Claude privately");
-        messenger.info(sender, "/codex threads and /codex thread <new|switch|rename|delete> ...");
-        messenger.info(sender, "/claude threads and /claude thread <new|switch|rename|delete> ...");
-        messenger.info(sender, "/codex effort [chat|agent] [level] (also works with /claude)");
-        messenger.info(sender, "/sllm account <connect|status|disconnect> <provider>");
-        messenger.info(sender, "/sllm threads [provider] [chat|agent]");
-        messenger.info(sender, "/sllm effort <provider> <chat|agent> [default|level]");
-        messenger.info(sender, "/sllm runtime <install|update|rollback|status> <provider|all>");
-        messenger.info(sender, "/sllm tools <list|inspect|enable|disable|remove> - manage agent runtime resources");
-        messenger.info(sender, "/sllm cancel [provider|all] and /sllm more [page]");
-        messenger.info(sender, "WARNING: agent mode grants OS access and can dispatch real server-console commands.");
-        if (sender instanceof ConsoleCommandSender) {
-            messenger.info(sender, "/sllm access <add|remove|list> <player|uuid> (console only)");
-        }
+    private void shortHelp(CommandSender sender) {
+        messenger.info(sender, "Use /codex <message> to continue your current Codex agent.");
+        messenger.info(sender, "Use /codex threads to open this thread list, or /codex thread new to start fresh.");
+        listThreads(sender, Provider.CODEX, SessionMode.AGENT);
+    }
+
+    private void fullHelp(CommandSender sender) {
+        messenger.info(sender, "SpigotLLM command reference (optional values are in brackets):");
+        messenger.info(sender, "/sllm - compact help and clickable Codex thread list");
+        messenger.info(sender, "/codex <prompt>");
+        messenger.info(sender, "/codex threads | /codex thread <current|list|new>");
+        messenger.info(sender, "/codex thread <switch|use> <id>");
+        messenger.info(sender, "/codex thread rename [old-id] <new-name>");
+        messenger.info(sender, "/codex thread delete <id> confirm");
+        messenger.info(sender, "/codex <effort|level> [default|minimal|low|medium|high|xhigh]");
+        messenger.info(sender, "/claude [chat|agent] <prompt>");
+        messenger.info(sender, "/claude threads [chat|agent] | /claude thread current [chat|agent]");
+        messenger.info(sender, "/claude thread new [chat|agent] <name>");
+        messenger.info(sender, "/claude thread <switch|use> [chat|agent] <name>");
+        messenger.info(sender, "/claude thread rename [chat|agent] [old-name] <new-name>");
+        messenger.info(sender, "/claude thread delete [chat|agent] <name> confirm");
+        messenger.info(sender, "/claude <effort|level> [chat|agent] [default|low|medium|high|xhigh|max|ultracode]");
+        messenger.info(sender, "/sllm prompt <codex|claude> <chat|agent> <prompt>");
+        messenger.info(sender, "/sllm threads [codex|claude] [chat|agent]");
+        messenger.info(sender, "/sllm thread <codex|claude> <current|list|new|switch|use|rename|delete> ...");
+        messenger.info(sender, "/sllm <effort|level> <codex|claude> <chat|agent> [level|default]");
+        messenger.info(sender, "/sllm account <connect|status> <codex|claude>");
+        messenger.info(sender, "/sllm account disconnect <codex|claude> confirm");
+        messenger.info(sender, "/sllm account code claude [code] | /sllm account code cancel");
+        messenger.info(sender, "/sllm runtime status [codex|claude|all]");
+        messenger.info(sender, "/sllm runtime <install|update> <codex|claude|all>");
+        messenger.info(sender, "/sllm runtime rollback <codex|claude|all> confirm");
+        messenger.info(sender, "/sllm tools list | /sllm tools <inspect|enable|disable|remove> <owner> <resource-id>");
+        messenger.info(sender, "/sllm tools purge <transient|all> confirm (console only)");
+        messenger.info(sender, "/sllm cancel [codex|claude|all] | /sllm more [page]");
+        messenger.info(sender, "/sllm access <list|add|remove> [player|uuid] (console only)");
+        messenger.info(sender, "/sllm session <new|list|use|rename|delete> ... (legacy alias)");
     }
 
     private String join(String[] args, int start) {
@@ -752,9 +894,14 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if ("codex".equalsIgnoreCase(command.getName()) || "claude".equalsIgnoreCase(command.getName())) {
             Provider directProvider = Provider.parse(command.getName());
-            if (args.length == 1) return matching(args[0], "chat", "agent", "thread", "threads", "effort");
+            if (args.length == 1) {
+                return directProvider == Provider.CODEX
+                        ? matching(args[0], "thread", "threads", "effort")
+                        : matching(args[0], "chat", "agent", "thread", "threads", "effort");
+            }
             if ("threads".equalsIgnoreCase(args[0])) {
-                return args.length == 2 ? matching(args[1], "chat", "agent") : Collections.<String>emptyList();
+                return args.length == 2 && directProvider == Provider.CLAUDE
+                        ? matching(args[1], "chat", "agent") : Collections.<String>emptyList();
             }
             if ("thread".equalsIgnoreCase(args[0])) {
                 if (args.length == 2) {
@@ -762,6 +909,12 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
                 }
                 String action = args[1].toLowerCase(Locale.ROOT);
                 if (args.length == 3) {
+                    if (directProvider == Provider.CODEX) {
+                        if ("new".equals(action) || "current".equals(action) || "list".equals(action)) {
+                            return Collections.emptyList();
+                        }
+                        return threadNames(sender, directProvider, SessionMode.AGENT, args[2]);
+                    }
                     if ("current".equals(action) || "list".equals(action) || "new".equals(action)) {
                         return matching(args[2], "chat", "agent");
                     }
@@ -783,7 +936,7 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             if ("effort".equalsIgnoreCase(args[0]) || "level".equalsIgnoreCase(args[0])) {
                 if (args.length == 2) {
                     if (directProvider == Provider.CODEX) {
-                        return matching(args[1], "chat", "agent", "default", "minimal", "low", "medium",
+                        return matching(args[1], "default", "minimal", "low", "medium",
                                 "high", "xhigh");
                     }
                     return matching(args[1], "chat", "agent", "default", "low", "medium", "high",
@@ -828,10 +981,12 @@ public final class SpigotLlmCommand implements CommandExecutor, TabCompleter {
             return matching(args[2], "current", "list", "new", "switch", "rename", "delete");
         }
         if (args.length == 3 && "threads".equalsIgnoreCase(args[0]) && Provider.parse(args[1]) != null) {
-            return matching(args[2], "chat", "agent");
+            return Provider.parse(args[1]) == Provider.CODEX
+                    ? matching(args[2], "agent") : matching(args[2], "chat", "agent");
         }
         if (args.length == 3 && ("effort".equalsIgnoreCase(args[0]) || "level".equalsIgnoreCase(args[0]))) {
-            return matching(args[2], "chat", "agent");
+            return Provider.parse(args[1]) == Provider.CODEX
+                    ? matching(args[2], "agent") : matching(args[2], "chat", "agent");
         }
         if (args.length == 4 && ("effort".equalsIgnoreCase(args[0]) || "level".equalsIgnoreCase(args[0]))) {
             Provider provider = Provider.parse(args[1]);

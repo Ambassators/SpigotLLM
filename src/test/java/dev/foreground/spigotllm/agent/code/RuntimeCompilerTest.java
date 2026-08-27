@@ -1,7 +1,9 @@
 package dev.foreground.spigotllm.agent.code;
 
+import org.bukkit.command.CommandSender;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -67,6 +69,34 @@ final class RuntimeCompilerTest {
 
         CompilationDiagnostic diagnostic = error.getDiagnostics().get(0);
         assertEquals("snippet", diagnostic.getFileName());
+        assertEquals(1, diagnostic.getLine());
+        assertTrue(diagnostic.getColumn() > 0);
+    }
+
+    @Test
+    void executesCommandBodyWithLiveInvocationValues() throws Exception {
+        final List<Object> emitted = new ArrayList<Object>();
+        CompiledCommand command = compiler.compileCommand(
+                "emit(sender.getName());\nreturn label + \"/\" + args[0];");
+        CommandSender sender = (CommandSender) Proxy.newProxyInstance(
+                getClass().getClassLoader(), new Class<?>[] { CommandSender.class },
+                (proxy, method, arguments) -> "getName".equals(method.getName()) ? "OriginalBanana2" : null);
+
+        Object result = command.execute(null, null, emitted::add, sender,
+                "movepremiumlb", new String[] { "north" });
+
+        assertEquals("movepremiumlb/north", result);
+        assertEquals(1, emitted.size());
+        assertEquals("OriginalBanana2", emitted.get(0));
+    }
+
+    @Test
+    void reportsCommandDiagnosticsRelativeToTheSubmittedBody() {
+        CompilationException error = assertThrows(CompilationException.class,
+                () -> compiler.compileCommand("Object value = ;\nreturn value;"));
+
+        CompilationDiagnostic diagnostic = error.getDiagnostics().get(0);
+        assertEquals("command", diagnostic.getFileName());
         assertEquals(1, diagnostic.getLine());
         assertTrue(diagnostic.getColumn() > 0);
     }

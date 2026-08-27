@@ -106,6 +106,59 @@ public final class RuntimeCompiler {
         }
     }
 
+    /**
+     * Compiles a Bukkit command method body. In addition to the normal snippet
+     * values, the body can reference {@code sender}, {@code label}, and
+     * {@code args} from the live command invocation.
+     */
+    public CompiledCommand compileCommand(String body) throws CompilationException {
+        requireSource(body);
+        String simpleName = "Command_" + snippetSequence.incrementAndGet();
+        String packageName = "dev.foreground.spigotllm.agent.code.generated";
+        String className = packageName + "." + simpleName;
+        StringBuilder source = new StringBuilder(body.length() + 1024);
+        source.append("package ").append(packageName).append(";\n")
+                .append("import dev.foreground.spigotllm.agent.code.CommandProgram;\n")
+                .append("import dev.foreground.spigotllm.agent.code.MiniContext;\n")
+                .append("import dev.foreground.spigotllm.agent.code.MiniEmitter;\n")
+                .append("import org.bukkit.Server;\n")
+                .append("import org.bukkit.command.CommandSender;\n")
+                .append("import org.bukkit.entity.Player;\n")
+                .append("public final class ").append(simpleName).append(" implements CommandProgram {\n")
+                .append("  private MiniEmitter __emitter;\n")
+                .append("  public Object run(MiniContext context, Server server, MiniEmitter emitter, ")
+                .append("CommandSender sender, String label, String[] args) throws Exception {\n")
+                .append("    this.__emitter = emitter;\n")
+                .append("    try { return execute(context, server, sender, label, args); } ")
+                .append("finally { this.__emitter = null; }\n")
+                .append("  }\n")
+                .append("  private Object execute(MiniContext context, Server server, ")
+                .append("CommandSender sender, String label, String[] args) throws Exception {\n");
+        int bodyLine = lineCount(source) + 1;
+        source.append(body).append('\n')
+                .append("  }\n")
+                .append("  private Object emit(Object value) {\n")
+                .append("    if (this.__emitter != null) this.__emitter.emit(value);\n")
+                .append("    return value;\n")
+                .append("  }\n")
+                .append("}\n");
+
+        SimpleCompiler compiler = compiler();
+        cook(compiler, source.toString(), "command", bodyLine - 1);
+        try {
+            Class<?> candidate = compiler.getClassLoader().loadClass(className);
+            @SuppressWarnings("unchecked")
+            Class<? extends CommandProgram> programClass = (Class<? extends CommandProgram>) candidate;
+            return new CompiledCommand(programClass, sha256(body));
+        } catch (ClassNotFoundException e) {
+            throw failure("command", -1, -1,
+                    "Compiled command class was not produced: " + safeMessage(e));
+        } catch (LinkageError e) {
+            throw failure("command", -1, -1,
+                    "Cannot link compiled command: " + safeMessage(e));
+        }
+    }
+
     private SimpleCompiler compiler() {
         SimpleCompiler compiler = new SimpleCompiler();
         compiler.setParentClassLoader(parentClassLoader);

@@ -11,6 +11,8 @@ public final class SessionRecord {
     private String providerSessionId;
     private String reasoningEffort;
     private String storageId;
+    private String title;
+    private boolean autoNamingPending;
     private long createdAt;
     private long updatedAt;
 
@@ -32,6 +34,14 @@ public final class SessionRecord {
 
     public void setName(String name) {
         this.name = name;
+    }
+
+    public String getDisplayName() {
+        return title == null || title.trim().isEmpty() ? name : title;
+    }
+
+    void setGeneratedTitle(String title) {
+        this.title = title;
     }
 
     public Provider getProvider() {
@@ -62,6 +72,14 @@ public final class SessionRecord {
     public String getStorageId() {
         ensureStorageId();
         return storageId;
+    }
+
+    public boolean isAutoNamingPending() {
+        return autoNamingPending;
+    }
+
+    void setAutoNamingPending(boolean autoNamingPending) {
+        this.autoNamingPending = autoNamingPending;
     }
 
     boolean ensureStorageId() {

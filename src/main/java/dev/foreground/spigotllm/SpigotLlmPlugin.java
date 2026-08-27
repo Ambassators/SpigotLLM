@@ -9,6 +9,7 @@ import dev.foreground.spigotllm.model.Provider;
 import dev.foreground.spigotllm.output.PrivateMessenger;
 import dev.foreground.spigotllm.provider.ClaudeAdapter;
 import dev.foreground.spigotllm.provider.CodexAdapter;
+import dev.foreground.spigotllm.provider.AgentWorkspace;
 import dev.foreground.spigotllm.provider.ProviderAdapter;
 import dev.foreground.spigotllm.runtime.RuntimeInstaller;
 import dev.foreground.spigotllm.runtime.RuntimeResolver;
@@ -16,8 +17,6 @@ import dev.foreground.spigotllm.session.SessionStore;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.EnumMap;
@@ -47,8 +46,8 @@ public final class SpigotLlmPlugin extends JavaPlugin {
                     getConfig().getInt("runtimes.download-timeout-seconds", 900),
                     getConfig().getInt("runtimes.retain-releases", 2));
 
-            Path agentWorkingDirectory = resolveWorkingDirectory(
-                    getConfig().getString("execution.agent-working-directory", "."));
+            AgentWorkspace agentWorkspace = AgentWorkspace.open(data,
+                    getConfig().getString("execution.agent-working-directory", "workspace"));
             int chatTimeout = getConfig().getInt("execution.chat-timeout-seconds", 300);
             int agentTimeout = getConfig().getInt("execution.agent-timeout-seconds", 1800);
             Path consoleLog = resolveFilePath(getConfig().getString("agent-console.log-file", "logs/latest.log"));
@@ -77,10 +76,10 @@ public final class SpigotLlmPlugin extends JavaPlugin {
                     toolRuntime);
             Map<Provider, ProviderAdapter> adapters = new EnumMap<Provider, ProviderAdapter>(Provider.class);
             adapters.put(Provider.CODEX, new CodexAdapter(
-                    resolver, sessions, consoleBridge, agentWorkingDirectory, chatTimeout, agentTimeout));
+                    resolver, sessions, consoleBridge, agentWorkspace, chatTimeout, agentTimeout));
             adapters.put(Provider.CLAUDE, new ClaudeAdapter(
                     resolver, sessions, secrets, consoleBridge,
-                    agentWorkingDirectory, chatTimeout, agentTimeout));
+                    agentWorkspace, chatTimeout, agentTimeout));
 
             PrivateMessenger messenger = new PrivateMessenger(
                     this,
@@ -102,6 +101,7 @@ public final class SpigotLlmPlugin extends JavaPlugin {
             register("claude", commands);
 
             getLogger().info("Enabled. No player is trusted by default; authorize OP UUIDs from console with /sllm access add.");
+            getLogger().info("Agent source workspace: " + agentWorkspace.root());
             getLogger().warning("Agent mode has access to the live server log and can dispatch commands as the real console.");
             if (getConfig().getBoolean("agent-tools.enabled", true)) {
                 getLogger().warning("Agent runtime tools execute unsandboxed Java and deep reflection with full server/JVM authority.");
@@ -126,16 +126,8 @@ public final class SpigotLlmPlugin extends JavaPlugin {
         command.setTabCompleter(commands);
     }
 
-    private Path resolveWorkingDirectory(String configured) throws IOException {
-        File file = new File(configured == null || configured.trim().isEmpty() ? "." : configured.trim());
-        Path path = file.toPath().toAbsolutePath().normalize();
-        Files.createDirectories(path);
-        if (!Files.isDirectory(path)) throw new IOException("Agent working directory is not a directory: " + path);
-        return path;
-    }
-
     private Path resolveFilePath(String configured) {
-        File file = new File(configured == null || configured.trim().isEmpty()
+        java.io.File file = new java.io.File(configured == null || configured.trim().isEmpty()
                 ? "logs/latest.log" : configured.trim());
         return file.toPath().toAbsolutePath().normalize();
     }

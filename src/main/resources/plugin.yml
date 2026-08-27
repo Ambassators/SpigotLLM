@@ -9,8 +9,8 @@ commands:
     usage: /spigotllm help
     aliases: [sllm]
   codex:
-    description: Prompt Codex using your active thread.
-    usage: /codex [agent] <prompt>
+    description: Prompt a Codex agent using your active thread.
+    usage: /codex <prompt>
   claude:
     description: Prompt Claude using your active thread.
     usage: /claude [agent] <prompt>

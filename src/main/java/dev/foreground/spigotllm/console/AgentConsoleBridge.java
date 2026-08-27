@@ -206,7 +206,7 @@ public final class AgentConsoleBridge {
             Files.deleteIfExists(lease.request);
             Files.deleteIfExists(lease.response);
             plugin.getLogger().warning("Agent console command by " + lease.identity.displayName() + " using "
-                    + lease.session.getProvider().id() + "/" + lease.session.getName() + ": "
+                    + lease.session.getProvider().id() + "/" + lease.session.getDisplayName() + ": "
                     + commandName(parsed.command));
             boolean accepted = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), parsed.command);
             writeAtomic(lease.response, "id=" + parsed.id + "\nstatus="

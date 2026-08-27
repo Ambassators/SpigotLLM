@@ -81,12 +81,33 @@ first match or timeout. Remove with `event.unwatch {"resourceId":"..."}`.
 
 ## Temporary commands and schedules
 
-`command.create` accepts `resourceId`, `name`, `aliases`, `description`,
-`usage`, `access`, `permission`, `permissionMessage`, `reply`,
-`consoleCommands`, and static `tabCompletions`. Access is `authorized`
-(default), `console`, `players`, `ops`, `permission`, or `everyone`. Reply and
-command templates support `%sender%`, `%label%`, `%args%`, and `%arg0%` etc.
-Remove with `command.remove`.
+`command.create` registers a source-backed Bukkit command trigger. It accepts
+`resourceId`, `name`, `aliases`, `description`, `usage`, `access`, `permission`,
+`permissionMessage`, `source`, and static `tabCompletions`. `source` is a Java
+method body compiled off-thread and invoked synchronously each time the command
+runs. It receives `MiniContext context`, `Server server`, the live
+`CommandSender sender`, `String label`, `String[] args`, and `emit(value)`.
+Return `Boolean.FALSE` to make Bukkit show the command usage; every other return
+value marks the command handled. Use `context.dispatchCommand(sender, ...)` to
+run another command as the invoking sender, or pass `null` to run as console.
+Use `context.sendMessage(sender, ...)` to reply. Example:
+
+```json
+{
+  "id":"move-command",
+  "operation":"command.create",
+  "arguments":{
+    "resourceId":"move-premium-lb",
+    "name":"movepremiumlb",
+    "access":"authorized",
+    "source":"context.sendMessage(sender, \"Running for \" + sender.getName()); return Boolean.TRUE;"
+  },
+  "lifecycle":"reboot"
+}
+```
+
+Access is `authorized` (default), `console`, `players`, `ops`, `permission`, or
+`everyone`. `source` is required. Remove the command with `command.remove`.
 
 `schedule.once` / `schedule.repeat` accept `resourceId`, `delayTicks`,
 `periodTicks`, `maxRuns`, and an action such as

@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import dev.foreground.spigotllm.agent.code.CompiledCommand;
 import dev.foreground.spigotllm.agent.code.CompiledModule;
 import dev.foreground.spigotllm.agent.code.CompiledSnippet;
 import dev.foreground.spigotllm.agent.code.CompilationDiagnostic;
@@ -30,6 +31,7 @@ import dev.foreground.spigotllm.access.AccessStore;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
+import org.bukkit.entity.Player;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventPriority;
 import org.bukkit.plugin.Plugin;
@@ -497,12 +499,40 @@ public final class AgentToolRuntime implements AutoCloseable {
                 optionalString(args, "usage", null), optionalString(args, "permission", null),
                 optionalString(args, "permissionMessage", null),
                 DynamicCommandManager.AccessMode.parse(optionalString(args, "access", "authorized")));
-        StructuredCommandResource resource = new StructuredCommandResource(lease.owner(), resourceId, spec,
-                optionalString(args, "reply", null), strings(args.get("consoleCommands")),
-                strings(args.get("tabCompletions")), lease.eventsFile());
+        final String source = requiredString(args, "source");
+        compileCommand(lease, request, resourceId, spec, source, strings(args.get("tabCompletions")));
+    }
+
+    private void compileCommand(final LeaseAccess lease, final AgentRequest request, final String resourceId,
+                                final DynamicCommandManager.Spec spec, final String source,
+                                final List<String> tabCompletions) {
+        compilerExecutor.execute(new Runnable() {
+            @Override public void run() {
+                try {
+                    final CompiledCommand compiled = compiler.compileCommand(source);
+                    audit(lease.owner(), request.getOperation(), compiled.getSourceHash());
+                    new BukkitRunnable() {
+                        @Override public void run() {
+                            activateCommand(lease, request, resourceId, spec, compiled, tabCompletions);
+                        }
+                    }.runTask(plugin);
+                } catch (Throwable failure) {
+                    fail(lease, request, failure);
+                }
+            }
+        });
+    }
+
+    private void activateCommand(LeaseAccess lease, AgentRequest request, String resourceId,
+                                 DynamicCommandManager.Spec spec, CompiledCommand compiled,
+                                 List<String> tabCompletions) {
+        if (!lease.active()) return;
+        String handleOwner = request.getLifecycle().getType() == Lifecycle.Type.PROMPT
+                ? lease.handleOwner() : "resource:" + lease.owner() + ":" + resourceId;
+        ExecutableCommandResource resource = new ExecutableCommandResource(lease.owner(), lease.promptScope(),
+                handleOwner, resourceId, spec, tabCompletions, lease.eventsFile(), compiled);
         ResourceMetadata metadata = resources.register(registration(lease, request, resourceId,
-                "command", attributes("name", spec.name)), resource);
-        audit(lease.owner(), operation, spec.name);
+                "command", attributes("name", spec.name, "sourceHash", compiled.getSourceHash())), resource);
         respond(lease, AgentProtocol.success(request, gson.toJsonTree(metadata)));
     }
 
@@ -1019,60 +1049,78 @@ public final class AgentToolRuntime implements AutoCloseable {
         @Override public void close(RemovalReason reason) { disable(); }
     }
 
-    private final class StructuredCommandResource implements ManagedResource {
-        private final String owner;
-        private final String resourceId;
+    private final class ExecutableCommandResource implements ManagedResource {
+        private final String owner, promptScope, handleOwner, resourceId;
         private final DynamicCommandManager.Spec spec;
-        private final String reply;
-        private final List<String> consoleCommands;
         private final List<String> tabCompletions;
         private final Path eventsFile;
+        private final CompiledCommand compiled;
+        private BukkitMiniContext context;
         private DynamicCommandManager.Registration registration;
 
-        StructuredCommandResource(String owner, String resourceId, DynamicCommandManager.Spec spec, String reply,
-                                  List<String> consoleCommands, List<String> tabCompletions, Path eventsFile) {
-            this.owner = owner; this.resourceId = resourceId; this.spec = spec; this.reply = reply;
-            this.consoleCommands = consoleCommands; this.tabCompletions = tabCompletions; this.eventsFile = eventsFile;
+        ExecutableCommandResource(String owner, String promptScope, String handleOwner, String resourceId,
+                                  DynamicCommandManager.Spec spec, List<String> tabCompletions,
+                                  Path eventsFile, CompiledCommand compiled) {
+            this.owner = owner; this.promptScope = promptScope; this.handleOwner = handleOwner;
+            this.resourceId = resourceId; this.spec = spec; this.tabCompletions = tabCompletions;
+            this.eventsFile = eventsFile; this.compiled = compiled;
         }
 
         @Override public void enable() {
-            registration = commands.register(spec, new DynamicCommandManager.Handler() {
-                @Override public boolean execute(CommandSender sender, String label, String[] arguments) throws Exception {
-                    JsonObject event = new JsonObject();
-                    event.addProperty("type", "command.invoked");
-                    event.addProperty("resourceId", resourceId);
-                    event.addProperty("sender", sender.getName());
-                    event.addProperty("label", label);
-                    JsonArray args = new JsonArray(); for (String argument : arguments) args.add(argument); event.add("arguments", args);
-                    eventWriter.emit(eventsFile, event);
-                    try {
-                        if (reply != null) sender.sendMessage(template(reply, sender, label, arguments));
-                        for (String command : consoleCommands) diagnostics.executeConsole(template(command, sender, label, arguments));
-                        return true;
-                    } catch (Throwable failure) {
-                        JsonObject error = new JsonObject();
-                        error.addProperty("type", "command.error");
-                        error.addProperty("resourceId", resourceId);
-                        error.addProperty("error", failure.getClass().getName());
-                        eventWriter.emit(eventsFile, error);
-                        failResource(owner, resourceId, failure);
-                        if (failure instanceof Exception) throw (Exception) failure;
-                        throw new Exception(failure);
+            context = context(owner, promptScope, handleOwner, resourceId, eventsFile);
+            try {
+                registration = commands.register(spec, new DynamicCommandManager.Handler() {
+                    @Override public boolean execute(CommandSender sender, String label, String[] arguments) throws Exception {
+                        JsonObject event = commandInvocationEvent(resourceId, sender, label, arguments);
+                        eventWriter.emit(eventsFile, event);
+                        long started = System.nanoTime();
+                        try {
+                            Object result = compiled.execute(context, plugin.getServer(), context::emit,
+                                    sender, label, arguments);
+                            context.emit(result);
+                            return !(result instanceof Boolean) || ((Boolean) result).booleanValue();
+                        } catch (Throwable failure) {
+                            JsonObject error = new JsonObject();
+                            error.addProperty("type", "command.error");
+                            error.addProperty("resourceId", resourceId);
+                            error.addProperty("error", failure.getClass().getName());
+                            eventWriter.emit(eventsFile, error);
+                            failResource(owner, resourceId, failure);
+                            if (failure instanceof Exception) throw (Exception) failure;
+                            throw new Exception(failure);
+                        } finally {
+                            warnSlow(owner, resourceId, started);
+                        }
                     }
-                }
-            }, tabCompletions.isEmpty() ? null : new DynamicCommandManager.Completion() {
-                @Override public List<String> complete(CommandSender sender, String alias, String[] arguments) {
-                    String prefix = arguments.length == 0 ? "" : arguments[arguments.length - 1].toLowerCase(Locale.ROOT);
-                    List<String> result = new ArrayList<String>();
-                    for (String candidate : tabCompletions) {
-                        if (candidate.toLowerCase(Locale.ROOT).startsWith(prefix)) result.add(candidate);
+                }, tabCompletions.isEmpty() ? null : new DynamicCommandManager.Completion() {
+                    @Override public List<String> complete(CommandSender sender, String alias, String[] arguments) {
+                        String prefix = arguments.length == 0 ? ""
+                                : arguments[arguments.length - 1].toLowerCase(Locale.ROOT);
+                        List<String> result = new ArrayList<String>();
+                        for (String candidate : tabCompletions) {
+                            if (candidate.toLowerCase(Locale.ROOT).startsWith(prefix)) result.add(candidate);
+                        }
+                        return result;
                     }
-                    return result;
-                }
-            });
+                });
+            } catch (RuntimeException failure) {
+                context.close();
+                context = null;
+                throw failure;
+            }
         }
-        @Override public void disable() { if (registration != null) registration.close(); registration = null; }
-        @Override public void close(RemovalReason reason) { disable(); }
+
+        @Override public void disable() {
+            if (registration != null) registration.close();
+            registration = null;
+            if (context != null) context.close();
+            context = null;
+        }
+
+        @Override public void close(RemovalReason reason) {
+            disable();
+            if (handleOwner.startsWith("resource:")) releaseHandles(handleOwner);
+        }
     }
 
     private final class StructuredScheduleResource implements ManagedResource {
@@ -1124,17 +1172,21 @@ public final class AgentToolRuntime implements AutoCloseable {
         try { reflection.releaseOwner(handleOwner); } catch (ReflectionException ignored) { }
     }
 
-    private static String template(String value, CommandSender sender, String label, String[] arguments) {
-        String result = value.replace("%sender%", sender.getName()).replace("%label%", label)
-                .replace("%args%", join(arguments));
-        for (int index = 0; index < arguments.length; index++) result = result.replace("%arg" + index + "%", arguments[index]);
-        return result;
-    }
-
-    private static String join(String[] values) {
-        StringBuilder result = new StringBuilder();
-        for (String value : values) { if (result.length() > 0) result.append(' '); result.append(value); }
-        return result.toString();
+    private static JsonObject commandInvocationEvent(String resourceId, CommandSender sender,
+                                                     String label, String[] arguments) {
+        JsonObject event = new JsonObject();
+        event.addProperty("type", "command.invoked");
+        event.addProperty("resourceId", resourceId);
+        event.addProperty("sender", sender.getName());
+        event.addProperty("senderType", sender.getClass().getName());
+        if (sender instanceof Player) {
+            event.addProperty("senderUuid", ((Player) sender).getUniqueId().toString());
+        }
+        event.addProperty("label", label);
+        JsonArray args = new JsonArray();
+        for (String argument : arguments) args.add(argument);
+        event.add("arguments", args);
+        return event;
     }
 
     private static Map<String, String> attributes(String... pairs) {

@@ -63,7 +63,7 @@ sllm account connect claude
 sllm account status <codex|claude>
 sllm account disconnect <codex|claude> confirm
 
-codex [chat|agent] <prompt>
+codex <prompt>
 claude [chat|agent] <prompt>
 sllm prompt <codex|claude> <chat|agent> <prompt>
 sllm cancel [codex|claude|all]
@@ -92,8 +92,8 @@ the selected provider/model default. Inspect or change the active named
 thread's override with:
 
 ```text
-sllm effort codex chat
-sllm effort codex chat high
+sllm effort codex agent
+sllm effort codex agent high
 sllm effort claude agent xhigh
 sllm effort claude agent default
 codex effort high
@@ -111,36 +111,58 @@ SpigotLLM override.
 ## Conversation threads
 
 ```text
-codex threads [chat|agent]
-codex thread current [chat|agent]
-codex thread new [chat|agent] <name>
-codex thread switch [chat|agent] <name>
-codex thread rename [chat|agent] [old-name] <new-name>
-codex thread delete [chat|agent] <name> confirm
+codex threads
+codex thread current
+codex thread new
+codex thread switch <name>
+codex thread rename [old-name] <new-name>
+codex thread delete <name> confirm
 ```
 
-The same commands work with `/claude`. Omitting the mode means `chat`.
+`/codex <prompt>` always runs in agent mode and keeps using the active thread.
+`/codex thread new` switches to a fresh thread; its first prompt becomes a
+Codex-style display title. A filesystem-safe ID derived from the same prompt is
+shown by `/codex threads` for management commands. The selected title is shown
+whenever a prompt starts. Claude keeps separate `chat` and `agent` modes and
+requires a name when creating a thread; omitting its mode means `chat`.
+In-game thread lists are clickable: switch and new-thread actions run directly,
+while rename and confirmed-delete actions are placed in the chat input for
+review. `/sllm` shows short hints for `/codex <message>`, `/codex threads`, and
+`/codex thread new`, followed by this thread menu. `/sllm help` shows the full
+command reference.
 `/sllm threads [codex|claude] [chat|agent]` lists across providers, and
 `/sllm thread <provider> ...` provides the same management commands from the
 main command. The older `/sllm session ...` syntax remains as a compatibility
 alias.
 
-Names contain 1–32 letters, numbers, underscores, or dashes. Chat and agent
-threads are separate and persist across restarts. The active thread is marked
+Names contain 1–32 letters, numbers, underscores, or dashes. Claude chat and
+agent threads are separate; Codex exposes agent threads only. Threads persist
+across restarts. The active thread is marked
 with `*` in listings. Deleting a name forgets the plugin's association;
 provider CLI transcript retention still follows the provider's local storage
 behavior.
 
 ## Agent-mode warning
 
-`agent` mode deliberately launches the provider with approval prompts and
-sandboxing bypassed. It can read, change, or delete anything accessible to the
+Codex always uses `agent` mode. Claude `agent` mode deliberately launches the
+provider with approval prompts and sandboxing bypassed. It can read, change, or
+delete anything accessible to the
 Minecraft server operating-system account and can execute commands with that
 account's privileges. It also receives a Minecraft console bridge with the
 authority of the real server console. Only authorize operators who should
-already have both levels of server access. `chat` mode disables Claude tools,
-does not receive the console bridge, and gives Codex a read-only sandbox rooted
-in a plugin-managed empty workspace.
+already have both levels of server access. Claude `chat` mode disables tools and
+does not receive the console bridge.
+
+Agent mode starts in the persistent `plugins/SpigotLLM/workspace` source
+workspace. Codex and Claude can clone public GitHub repositories into separate
+directories there, inspect and edit them, and use the console bridge to compare
+plugin source with the plugins running on the server. Git must be installed and
+available to the Minecraft server process. Private repositories require Git
+credentials configured for that operating-system account; SpigotLLM does not
+store GitHub credentials. Set `execution.agent-working-directory` to another
+relative directory inside `plugins/SpigotLLM`, or to an explicit absolute path,
+to override the location. The legacy default value `.` is migrated to the
+plugin-local `workspace` directory.
 
 When `agent-tools.enabled` is true, agent mode can additionally compile and run
 arbitrary Java on Bukkit's primary thread and use deep reflection against live
@@ -223,9 +245,9 @@ Available operation families are:
 - `event.watch` and `event.await`: observe Bukkit events with priority,
   cancelled-event handling, property filters, selected captured fields, match
   limits, and timeouts. Event mutation belongs in a Java mini-module.
-- `command.create` and related `command.*` operations: create temporary commands
-  with aliases, usage, tab completions, invocation events, replies, templated
-  actions, and an explicit sender-access policy.
+- `command.create` and related `command.*` operations: compile temporary Bukkit
+  command callbacks with the live sender, label, arguments, aliases, usage, tab
+  completions, invocation events, and an explicit sender-access policy.
 - `resource.list`, `resource.inspect`, `resource.extend`, `resource.enable`,
   `resource.disable`, and `resource.remove`: manage owned hooks, commands,
   scheduled work, snippets, handles, and modules.
@@ -260,6 +282,33 @@ and maximum run count for scheduled snippets. Use `code.cancel` with the
 returned resource ID to stop scheduled work. One-shot snippets never survive a
 restart. Behavior that must be restored after restart must be installed as a
 persistent mini-module.
+
+`command.create` uses the same compiled method-body model, but its trigger is a
+real Bukkit command invocation instead of an immediate or scheduled run. Its
+body additionally receives the live `CommandSender sender`, `String label`, and
+`String[] args`:
+
+```json
+{
+  "id": "move-command",
+  "operation": "command.create",
+  "arguments": {
+    "resourceId": "move-premium-lb",
+    "name": "movepremiumlb",
+    "access": "authorized",
+    "source": "context.sendMessage(sender, \"Running for \" + sender.getName()); return Boolean.TRUE;"
+  },
+  "lifecycle": "reboot"
+}
+```
+
+The callback runs synchronously on Bukkit's primary thread. It can inspect or
+cast `sender`, send a response with `context.sendMessage(sender, ...)`, and run
+another command as that player with `context.dispatchCommand(sender, ...)`.
+Passing `null` to `dispatchCommand` uses the server console instead. Returning
+`Boolean.FALSE` tells Bukkit the command was not handled; every other value
+marks it handled and is emitted to the resource's event stream. `source` is
+required; `command.create` does not create static reply/console templates.
 
 Reflection values can be ordinary JSON primitives, enums, UUIDs, arrays, or
 opaque handles returned by another operation. Supplying exact parameter type

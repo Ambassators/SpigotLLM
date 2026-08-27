@@ -39,7 +39,7 @@ public final class ClaudeAdapter implements ProviderAdapter {
     private final SessionStore sessions;
     private final SecretStore secrets;
     private final AgentConsoleBridge consoleBridge;
-    private final Path agentWorkingDirectory;
+    private final AgentWorkspace agentWorkspace;
     private final int chatTimeout;
     private final int agentTimeout;
     private final ProcessSupport processes = new ProcessSupport();
@@ -52,13 +52,13 @@ public final class ClaudeAdapter implements ProviderAdapter {
     });
 
     public ClaudeAdapter(RuntimeResolver runtimes, SessionStore sessions, SecretStore secrets,
-                         AgentConsoleBridge consoleBridge, Path agentWorkingDirectory,
+                         AgentConsoleBridge consoleBridge, AgentWorkspace agentWorkspace,
                          int chatTimeout, int agentTimeout) {
         this.runtimes = runtimes;
         this.sessions = sessions;
         this.secrets = secrets;
         this.consoleBridge = consoleBridge;
-        this.agentWorkingDirectory = agentWorkingDirectory;
+        this.agentWorkspace = agentWorkspace;
         this.chatTimeout = chatTimeout;
         this.agentTimeout = agentTimeout;
     }
@@ -74,7 +74,7 @@ public final class ClaudeAdapter implements ProviderAdapter {
             Path sessionRoot = sessions.claudeSessionRoot(identity, session);
             Path configRoot = sessionRoot.resolve("config");
             Path cwd = session.getMode() == SessionMode.AGENT
-                    ? agentWorkingDirectory
+                    ? agentWorkspace.root()
                     : sessionRoot.resolve("workspace");
             Files.createDirectories(configRoot);
             Files.createDirectories(cwd);
@@ -107,7 +107,7 @@ public final class ClaudeAdapter implements ProviderAdapter {
             if (session.getMode() == SessionMode.AGENT) {
                 consoleLease = consoleBridge.open(identity, session);
                 command.add("--append-system-prompt");
-                command.add(consoleLease.instructions());
+                command.add(consoleLease.instructions() + agentWorkspace.instructions());
                 command.add("--dangerously-skip-permissions");
             } else {
                 command.add("--safe-mode");
