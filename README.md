@@ -142,6 +142,51 @@ with `*` in listings. Deleting a name forgets the plugin's association;
 provider CLI transcript retention still follows the provider's local storage
 behavior.
 
+## Spark profiler integration
+
+SpigotLLM works with **stock Spark**: no `sparkaiconnector` fork is required.
+Install a Spark build compatible with your Minecraft/JVM version, or use your
+server's bundled Spark service. Spark is optional: the rest of SpigotLLM keeps
+working without it, and report imports do not require an installed profiler.
+
+Both Codex and Claude **agent** sessions receive four structured tools:
+
+| Tool | Capability |
+| --- | --- |
+| `spark.status` | Detect the public API, configuration limits and local import folder. |
+| `spark.snapshot` | Rolling CPU, TPS, MSPT, allocation rate, player ping and GC statistics with explicit unsupported/null readings. |
+| `spark.command` | Guarded stock profiler, health, heap, GC/tick monitor, ping and activity commands through the real console. |
+| `spark.report` | Analyze official full JSON report links or confined local JSON imports: self/inclusive hotspots, call paths, source attribution, thread/window selection, health metadata and heap histograms. |
+
+For example, in game:
+
+```text
+/codex Use Spark to inspect TPS, MSPT, CPU, allocation rate and GC. Do not start a capture or upload anything.
+/claude agent Analyze https://spark.lucko.me/REPORT_CODE and explain the main-thread hotspots, missing evidence, and next measurements.
+/codex I authorize a 60-second Spark main-thread profile and its normal report upload. Check for an existing capture first, then analyze the report without changing server settings.
+```
+
+Every new agent lease receives a detailed [`SPARK.md` guide](src/main/resources/spark-analysis-guide.md)
+covering the complete feature suite, request schemas, command flags, interpretation,
+privacy and a before/after investigation workflow. The provider is instructed to
+read it before using Spark tools. Ordinary Claude chat does not get server tools.
+
+Downloads and report parsing run off the server thread, with one worker, four
+queued requests, byte/depth/node/output limits and official-host-only HTTP reads.
+Metadata-only exports are never presented as full call trees. State-changing,
+uploading and heap commands require explicit `confirm:true` after user approval;
+profiler starts always have a timeout. A dispatch receipt is **not completion**:
+the agent verifies Spark's asynchronous result and report URL in the console log.
+Monitors/profilers are server-global and are not blindly cancelled on lease close.
+These guards do not sandbox the existing privileged agent tools.
+
+Settings are under `spark` in `config.yml`; remote reads can be disabled separately.
+Offline JSON imports go in `plugins/SpigotLLM/agent-tools/spark-reports` (the status
+tool returns the authoritative path). Convert native `.sparkprofile`/`.sparkheap`
+files with the official `lucko/spark2json` tool first. Full HPROF analysis,
+deobfuscation, browser flamegraph interactions and live viewer WebSocket sessions
+remain outside the structured analyzer; see the guide for the exact boundaries.
+
 ## Agent-mode warning
 
 Codex always uses `agent` mode. Claude `agent` mode deliberately launches the

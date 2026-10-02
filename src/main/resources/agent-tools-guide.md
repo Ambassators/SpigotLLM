@@ -23,6 +23,26 @@ parallel Codex and Claude threads cannot access one another's resources.
 - `console.execute`: `{"command":"list"}`.
 - `message.send`: `{"target":"console|broadcast|PlayerName","message":"text"}`.
 
+## Spark profiler and performance analysis
+
+Read `SPARK.md` in this lease for the complete feature suite, schemas, privacy
+limits, capture workflow, interpretation rules and compatibility notes.
+
+- `spark.status`: `{}`; optional integration/service detection and limits.
+- `spark.snapshot`: `{}`; public Spark CPU, TPS, MSPT, allocation, ping and GC data.
+- `spark.command`: `{"command":"profiler info"}`; a guarded **relative Spark
+  subcommand**, dispatched as console. Changes/uploads/heap work require
+  `confirm:true` after user authorization. Verify completion in `log.search`.
+- `spark.report`: `{"url":"https://spark.lucko.me/REPORT_CODE","limit":20}` or
+  `{"file":"capture.json","thread":"Server thread","windowStart":0,"windowEnd":2}`.
+  Reads full exports off-thread and returns bounded, privacy-filtered evidence.
+  File paths are relative to the directory returned by `spark.status`.
+
+This is an agent-mode tool family shared by Codex and Claude. It does not grant
+ordinary chat sessions or unauthorized players server access. Spark state is
+server-global, not owned by a lease; never blindly cancel another capture or
+toggle a monitor. Missing statistics/call trees must be reported as unavailable.
+
 ## Java code
 
 - `code.compile` / `code.run`: `{"source":"return server.getOnlinePlayers().size();"}`.

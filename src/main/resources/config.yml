@@ -31,6 +31,19 @@ agent-tools:
   compiler-threads: 1
   load-persistent: true
 
+# Optional stock Spark integration. No fork or mandatory Spark dependency.
+# Commands still run as console. Uploads/shared profiler changes/heap work need
+# explicit agent-tool confirm:true after user authorization; see SPARK.md.
+spark:
+  enabled: true
+  allow-remote-reports: true
+  # Both compressed and decoded response limits. Hard maximum is 64 MiB.
+  max-report-bytes: 16777216
+  # HTTP connect/read timeout (1..60 seconds); no redirects are followed.
+  http-timeout-seconds: 20
+  # Guarded profiler starts always have a timeout, defaulting to 60 seconds.
+  max-profiler-seconds: 300
+
 runtimes:
   retain-releases: 2
   connect-timeout-seconds: 20

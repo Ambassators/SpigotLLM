@@ -94,6 +94,7 @@ public final class AgentConsoleBridge {
             clearJsonFiles(lease.responsesDirectory);
             writeAtomic(directory.resolve("README.txt"), lease.guide());
             writeApiGuide(directory.resolve("API.md"));
+            writeResourceGuide(directory.resolve("SPARK.md"), "spark-analysis-guide.md");
             return lease;
         } catch (IOException e) {
             active.remove(key, lease);
@@ -273,8 +274,12 @@ public final class AgentConsoleBridge {
     }
 
     private void writeApiGuide(Path target) throws IOException {
+        writeResourceGuide(target, "agent-tools-guide.md");
+    }
+
+    private void writeResourceGuide(Path target, String resource) throws IOException {
         if (plugin == null) return;
-        InputStream input = plugin.getResource("agent-tools-guide.md");
+        InputStream input = plugin.getResource(resource);
         if (input == null) return;
         try {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -348,7 +353,8 @@ public final class AgentConsoleBridge {
 
         public String instructions() {
             return "Minecraft console access is available for this agent session. Read and follow the bridge "
-                    + "instructions at " + directory.resolve("README.txt") + ".";
+                    + "instructions at " + directory.resolve("README.txt") + ". For Spark performance diagnostics, read "
+                    + directory.resolve("SPARK.md") + " before using spark.* tools.";
         }
 
         private String guide() {
@@ -370,8 +376,9 @@ public final class AgentConsoleBridge {
                     + "Available families: snapshot.*, log.search, console.execute, message.send, "
                     + "event.watch/event.await/event.unwatch, command.create/command.remove, "
                     + "schedule.once/schedule.repeat/schedule.cancel, code.compile/code.run/code.runLater/"
-                    + "code.runTimer/code.cancel, reflect.*, module.*, and resource.*. "
-                    + "Read the complete schemas and examples at " + directory.resolve("API.md") + ".\n";
+                    + "code.runTimer/code.cancel, reflect.*, module.*, resource.*, and spark.*. "
+                    + "Read the complete schemas and examples at " + directory.resolve("API.md") + ".\n"
+                    + "Spark profiler, health, memory, GC and analysis workflows: " + directory.resolve("SPARK.md") + ".\n";
         }
 
         /** Resource/handle ownership is isolated to this stable provider thread, not just the human identity. */
