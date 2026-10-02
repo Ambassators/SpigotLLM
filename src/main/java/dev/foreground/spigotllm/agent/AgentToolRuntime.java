@@ -18,6 +18,8 @@ import dev.foreground.spigotllm.agent.code.MiniReflection;
 import dev.foreground.spigotllm.agent.code.RuntimeCompiler;
 import dev.foreground.spigotllm.agent.reflect.ReflectionException;
 import dev.foreground.spigotllm.agent.reflect.ReflectionService;
+import dev.foreground.spigotllm.agent.spark.SparkException;
+import dev.foreground.spigotllm.agent.spark.SparkIntegration;
 import dev.foreground.spigotllm.agent.runtime.AgentProtocol;
 import dev.foreground.spigotllm.agent.runtime.AgentRequest;
 import dev.foreground.spigotllm.agent.runtime.Lifecycle;
@@ -71,6 +73,7 @@ public final class AgentToolRuntime implements AutoCloseable {
     private final AgentEventStream eventWriter;
     private final TickMonitor ticks = new TickMonitor(1200);
     private final BukkitDiagnostics diagnostics;
+    private final SparkIntegration spark;
     private final DynamicCommandManager commands;
     private final ReflectionService reflection;
     private final MiniReflection miniReflection;
@@ -110,6 +113,7 @@ public final class AgentToolRuntime implements AutoCloseable {
             thread.setDaemon(true);
             return thread;
         });
+        this.spark = new SparkIntegration(plugin, consoleLog, this.root.resolve("spark-reports"));
         if (enabled && loadPersistentModules) loadPersistentModules();
     }
 
@@ -148,7 +152,9 @@ public final class AgentToolRuntime implements AutoCloseable {
         }
         String operation = request.getOperation();
         try {
-            if (operation.startsWith("reflect.")) {
+            if (operation.startsWith("spark.")) {
+                handleSpark(lease, request);
+            } else if (operation.startsWith("reflect.")) {
                 scheduleReflection(lease, request);
             } else if (operation.startsWith("code.")) {
                 handleCode(lease, request);
@@ -255,6 +261,24 @@ public final class AgentToolRuntime implements AutoCloseable {
                 }
             }
         }.runTask(plugin);
+    }
+
+    private void handleSpark(final LeaseAccess lease, final AgentRequest request) {
+        if (!lease.active()) return;
+        String operation = request.getOperation();
+        audit(lease.owner(), operation, null);
+        if ("spark.report".equals(operation)) {
+            spark.report(request.getArguments(), () -> open.get() && lease.active(),
+                    result -> respond(lease, AgentProtocol.success(request, result)),
+                    failure -> fail(lease, request, failure));
+            return;
+        }
+        JsonObject result;
+        if ("spark.status".equals(operation)) result = spark.status();
+        else if ("spark.snapshot".equals(operation)) result = spark.snapshot();
+        else if ("spark.command".equals(operation)) result = spark.command(request.getArguments());
+        else throw new SparkException("unknown_operation", "Unsupported Spark operation: " + operation);
+        respond(lease, AgentProtocol.success(request, result));
     }
 
     private void handleLogSearch(final LeaseAccess lease, final AgentRequest request) {
@@ -661,6 +685,7 @@ public final class AgentToolRuntime implements AutoCloseable {
         String code = "operation_failed";
         JsonElement details = null;
         if (failure instanceof RequestFailure) code = ((RequestFailure) failure).code;
+        else if (failure instanceof SparkException) code = ((SparkException) failure).getCode();
         else if (failure instanceof ReflectionException) code = ((ReflectionException) failure).getCode();
         else if (failure instanceof ResourceRegistryException) code = ((ResourceRegistryException) failure).getCode();
         else if (failure instanceof CompilationException) {
@@ -899,6 +924,7 @@ public final class AgentToolRuntime implements AutoCloseable {
         if (!open.compareAndSet(true, false)) return;
         resources.shutdownClear();
         compilerExecutor.shutdownNow();
+        spark.close();
         eventWriter.close();
     }
 

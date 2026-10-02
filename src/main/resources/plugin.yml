@@ -3,6 +3,7 @@ main: dev.foreground.spigotllm.SpigotLlmPlugin
 version: ${project.version}
 description: Run private Codex and Claude prompts from Minecraft.
 author: Foreground
+softdepend: [spark]
 commands:
   spigotllm:
     description: Manage SpigotLLM accounts, threads, access, and runtimes.
